@@ -1,0 +1,35 @@
+# Netlify config for the Web Rivals CLIENT (static files — PRD §3, §21.3).
+#
+# The client is a single static page (one index.html + hashed JS/CSS assets).
+# There is NO server-side rendering and NO client-side router, so no SPA catch-all
+# redirect is needed. Netlify just serves client/dist as-is.
+#
+# IMPORTANT — WS_URL is a BUILD-TIME variable.
+# vite bakes __WS_URL__ into the JS bundle at build (see client/vite.config.ts:
+# `define: { __WS_URL__: JSON.stringify(process.env.WS_URL ?? 'ws://localhost:8080') }`).
+# It is NOT read at runtime. You MUST set WS_URL in the Netlify site env BEFORE the
+# build, pointing at your deployed server over wss:// (browsers block ws:// from an
+# https page). Example:
+#     WS_URL = wss://web-rivals-server.fly.dev
+# Set it under: Site settings -> Build & deploy -> Environment -> Environment variables.
+# Changing WS_URL requires a NEW deploy (clear cache + redeploy) to take effect.
+
+[build]
+  # Run from the monorepo root so npm resolves the workspace + root deps (vite).
+  command = "npm run build -w @rivals/client"
+  publish = "client/dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# Long-cache the content-hashed assets; they're immutable (filename changes on
+# every content change). index.html itself stays uncached so new deploys are seen.
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache"

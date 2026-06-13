@@ -63,6 +63,9 @@ import { RemotePlayer } from './entities/remote-player';
 import { Hud } from './ui/hud';
 import { Lobby } from './ui/lobby';
 import type { LobbyChoice } from './ui/lobby';
+import { SettingsPanel, loadSettings } from './ui/settings';
+
+import { AudioManager } from './audio';
 
 import { WebSocketTransport, DelayedTransport } from './net/transport';
 import { NetClient } from './net/connection';
@@ -149,11 +152,21 @@ async function boot(): Promise<void> {
   showPrompt('Loading…');
   const world = await RapierTraceWorld.create(CRATE_MAP.solids);
 
+  // ---- audio + settings (PRD §8, §9) -----------------------------------------
+  // Audio is non-critical; the AudioManager is internally guarded so it is a safe
+  // no-op if Web Audio is missing. Settings persist to localStorage. Apply the
+  // loaded settings to the live systems BEFORE the move state reads fovBase.
+  const audio = new AudioManager();
+  const settings = loadSettings();
+  audio.setMasterVolume(settings.masterVolume);
+
   // ---- render shell + static map (built ONCE) ----
   const { scene, camera, renderer } = createScene(canvas!);
   scene.add(buildMapMesh(CRATE_MAP));
 
   const m = TUNING.movement;
+  // The FOV speed cue lerps up from fovBase, so the base follows the setting.
+  m.fovBase = settings.fov;
 
   // ---- target dummy (solo-wait / offline; hidden once a real opponent joins) ----
   const dummy = new Dummy(1, { x: 0, y: 3.9, z: 0 });
@@ -186,6 +199,7 @@ async function boot(): Promise<void> {
   const input = new Input(canvas!);
   const plc = new PointerLockCamera(canvas!);
   plc.yaw = state.yaw;
+  plc.sensitivity = settings.sensitivity;
 
   // ================= SESSION STATE (reset per match) =================
   // Everything that depends on "which connection are we in" lives here so the
@@ -234,6 +248,9 @@ async function boot(): Promise<void> {
   };
 
   canvas!.addEventListener('click', () => {
+    // First user gesture: satisfy the autoplay policy (the suspended context
+    // resumes here; idempotent and guarded internally).
+    audio.resume();
     // Only grab the pointer once we're actually in a match (lobby hidden).
     if (online || offlineActive) plc.requestLock();
   });
@@ -279,6 +296,11 @@ async function boot(): Promise<void> {
       // Self-knockback (rocket-jump) is predicted + instant in BOTH modes.
       if (id === localId) applyImpulse(state, imp.x, imp.y, imp.z);
     },
+    // Spatial explosion cue for every predicted detonation (own rocket/grenade
+    // in both modes + cosmetic opponent projectiles online). The server's
+    // authoritative Detonate event drives knockback, not audio, so this is the
+    // single, immediate source of explosion SFX.
+    onDetonate: (pos) => audio.explosionAt(pos),
   };
   const projectiles = new LocalProjectiles(world, particles, hooks);
   scene.add(projectiles.object);
@@ -286,6 +308,58 @@ async function boot(): Promise<void> {
   // ---- HUD + Lobby ----
   const hud = new Hud(hudRoot!);
   const lobby = new Lobby(lobbyRoot);
+
+  // ---- Settings overlay (PRD §8) --------------------------------------------
+  // A hidden full-screen panel reachable from a corner gear button. onChange
+  // fires LIVE as the sliders move, so sensitivity / FOV / volume preview
+  // instantly; the panel persists itself to localStorage. The panel root sits
+  // above the lobby; a DONE button and Esc dismiss it.
+  const settingsRoot = document.createElement('div');
+  document.body.appendChild(settingsRoot);
+  const settingsPanel = new SettingsPanel(settingsRoot, settings, (s) => {
+    plc.sensitivity = s.sensitivity;
+    m.fovBase = s.fov; // the FOV speed cue lerps up from fovBase
+    audio.setMasterVolume(s.masterVolume);
+  });
+
+  // A DONE button inside the settings panel and Esc both close it.
+  const settingsDone = document.createElement('button');
+  settingsDone.type = 'button';
+  settingsDone.className = 'wr-btn wr-btn-primary wr-settings-done';
+  settingsDone.textContent = 'DONE';
+  const settingsPanelEl = settingsRoot.querySelector('.wr-settings');
+  if (settingsPanelEl) settingsPanelEl.appendChild(settingsDone);
+
+  let settingsOpen = false;
+  const openSettings = (): void => {
+    settingsOpen = true;
+    settingsPanel.show();
+  };
+  const closeSettings = (): void => {
+    settingsOpen = false;
+    settingsPanel.hide();
+  };
+  settingsDone.addEventListener('click', closeSettings);
+
+  // Corner gear button — visible while the lobby is up (hidden in a match, where
+  // pointer-lock owns the cursor). Clicking opens the settings overlay.
+  const gearBtn = document.createElement('button');
+  gearBtn.type = 'button';
+  gearBtn.className = 'wr-gear';
+  gearBtn.title = 'Settings';
+  gearBtn.setAttribute('aria-label', 'Settings');
+  gearBtn.textContent = '⚙';
+  document.body.appendChild(gearBtn);
+  gearBtn.addEventListener('click', openSettings);
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && settingsOpen) closeSettings();
+  });
+
+  // Show the gear only when the lobby is interactive (not during a match).
+  const showGear = (visible: boolean): void => {
+    gearBtn.style.display = visible ? 'flex' : 'none';
+  };
 
   // Whether the offline practice sandbox is the active mode (drives pointer-lock
   // gating + prompts independently of the network session).
@@ -335,6 +409,7 @@ async function boot(): Promise<void> {
       const phaseChanged = rs.phase !== lastPhase;
       switch (rs.phase) {
         case 'countdown': {
+          if (phaseChanged) audio.roundStart(); // once per round, on entering countdown
           const sec = Math.max(1, Math.ceil(rs.timer));
           if (sec !== lastCountdownSec) {
             lastCountdownSec = sec;
@@ -352,12 +427,14 @@ async function boot(): Promise<void> {
         case 'roundEnd':
           if (phaseChanged) {
             lastCountdownSec = -1;
+            audio.roundEnd(iWon);
             hud.showBanner(iWon ? 'Round won' : 'Round lost', `${rs.score[0]} – ${rs.score[1]}`);
           }
           break;
         case 'matchEnd':
           if (phaseChanged) {
             lastCountdownSec = -1;
+            audio.roundEnd(iWon);
             hud.hideBanner();
             const a = names.get(0) ?? (localId === 0 ? myName : opponentName());
             const b = names.get(1) ?? (localId === 1 ? myName : opponentName());
@@ -381,6 +458,8 @@ async function boot(): Promise<void> {
       const killer = names.get(k.killer) ?? (k.killer === localId ? myName : 'Opponent');
       const victim = names.get(k.victim) ?? (k.victim === localId ? myName : 'Opponent');
       hud.addKill(killer, victim, k.weapon, k.fall);
+      // 1v1: every kill involves me — sting on my frags (skip my own deaths).
+      if (k.killer === localId && k.victim !== localId) audio.kill();
     };
 
     nc.onDamage = (d) => {
@@ -398,6 +477,7 @@ async function boot(): Promise<void> {
       } else {
         // We damaged the opponent -> hitmarker feedback.
         hud.hitmarker();
+        audio.hitmarker();
       }
     };
 
@@ -521,6 +601,16 @@ async function boot(): Promise<void> {
 
   let bloom = TUNING.ar.bloomMin;
   let shotSeq = 0;
+  // Reload SFX edge: fire audio.reload() only on the false->true transition so a
+  // held reload key (or repeated startReload calls) doesn't retrigger the click.
+  let prevReloading = false;
+  // Opponent footstep cadence (online): emit a positional step every interval
+  // while the remote is moving on the ground.
+  let footstepTimer = 0;
+  const FOOTSTEP_INTERVAL = 0.34; // seconds between steps at a walking cadence
+  const FOOTSTEP_SPEED_MIN = 2; // m/s horizontal: ignore near-stationary jitter
+  const _remotePrev: Vec3 = v3();
+  let remotePrevValid = false;
 
   const viewForward = (yaw: number, pitch: number, out: Vec3): void => {
     const cp = Math.cos(pitch);
@@ -561,7 +651,14 @@ async function boot(): Promise<void> {
   const _remoteCenter: Vec3 = v3();
   const remoteCenter = (): Vec3 => _remoteCenter;
 
+  // Audio listener scratch (camera forward/up for positional panning).
+  const _listenFwd: Vec3 = v3();
+  const _listenUp: Vec3 = { x: 0, y: 1, z: 0 };
+
   const fireWeapon = (slot: WeaponSlot, yaw: number, pitch: number): void => {
+    // Own weapon report is 2D (centered) — real, immediate feedback (PRD §9).
+    audio.shoot(slot);
+
     eyePosition(state, _eye);
     viewForward(yaw, pitch, _fwd);
     set(
@@ -593,6 +690,7 @@ async function boot(): Promise<void> {
         if (res.kind === 'entity' && res.entityId === dummy.id) {
           dummy.applyDamage(TUNING.ar.damage);
           hud.hitmarker();
+          audio.hitmarker();
         } else if (res.kind === 'world') {
           particles.impact(res.point, res.normal);
         }
@@ -620,6 +718,7 @@ async function boot(): Promise<void> {
             const backstab = backDot > k.backstabDotThreshold;
             dummy.applyDamage(backstab ? k.backstabDamage : k.damage);
             hud.hitmarker();
+            audio.hitmarker();
           }
         }
       }
@@ -652,6 +751,11 @@ async function boot(): Promise<void> {
     stepMovement(state, frame, world, SIM_DT, events);
     if (events.jumped) input.consumeJump();
 
+    // ---- local movement SFX (2D, own player) ----
+    if (events.jumped) audio.jump();
+    if (events.landed) audio.land();
+    if (events.slideStarted) audio.slideStart();
+
     if (state.pos.y < CRATE_MAP.killY) respawn();
 
     // ---- weapon select ----
@@ -671,6 +775,11 @@ async function boot(): Promise<void> {
     }
 
     weapons.update(SIM_DT);
+    // Reload SFX on the start edge (2D, own action).
+    const reloadingNow = weapons.reloading;
+    if (reloadingNow && !prevReloading) audio.reload();
+    prevReloading = reloadingNow;
+
     projectiles.update(SIM_DT);
     if (selfDetonationGuard > 0) selfDetonationGuard--;
 
@@ -720,6 +829,10 @@ async function boot(): Promise<void> {
     const interpFov = lerpScalar(prevFov, state.fov, alpha);
     plc.applyTo(camera, interpEye, interpFov);
 
+    // ---- audio listener: track the camera so positional events pan correctly ----
+    viewForward(plc.yaw, plc.pitch, _listenFwd);
+    audio.updateListener(interpEye, _listenFwd, _listenUp);
+
     // ---- sample + drive the remote opponent (online) ----
     if (net) {
       const renderTime = net.serverTime(nowMs) - TUNING.world.interpDelayMs;
@@ -735,10 +848,34 @@ async function boot(): Promise<void> {
         set(_remoteCenter, opp.pos[0], opp.pos[1], opp.pos[2]);
         remote.setPose(opp.pos[0], opp.pos[1], opp.pos[2], opp.yaw);
         remote.setHp(opp.hp);
+
+        // ---- positional opponent footsteps (real info in a 1v1, PRD §9) ----
+        // Estimate horizontal speed from the sampled-pose delta; emit a step at a
+        // walking cadence while moving and roughly grounded (small vertical drift).
+        if (remotePrevValid && dt > 0) {
+          const hdx = _remoteCenter.x - _remotePrev.x;
+          const hdz = _remoteCenter.z - _remotePrev.z;
+          const hSpeed = Math.hypot(hdx, hdz) / dt;
+          const vSpeed = Math.abs(_remoteCenter.y - _remotePrev.y) / dt;
+          const grounded = vSpeed < 1.5; // skip steps mid-jump/fall
+          if (hSpeed > FOOTSTEP_SPEED_MIN && grounded) {
+            footstepTimer -= dt;
+            if (footstepTimer <= 0) {
+              audio.footstepAt(_remoteCenter);
+              footstepTimer = FOOTSTEP_INTERVAL;
+            }
+          } else {
+            footstepTimer = 0; // next step plays promptly when movement resumes
+          }
+        }
+        copy(_remotePrev, _remoteCenter);
+        remotePrevValid = true;
       } else if (opponentPresent) {
         opponentPresent = false;
         remote.hide();
         dummy.object.visible = true;
+        remotePrevValid = false;
+        footstepTimer = 0;
       }
     }
 
@@ -794,11 +931,16 @@ async function boot(): Promise<void> {
     hidePrompt();
     hud.hideBanner();
     hud.hideScoreboard();
+    showGear(true); // settings reachable from the lobby
 
     const choice = await lobby.show();
     lobby.setStatus('Connecting…');
 
     const nc = await tryConnect(choice.name, choice.roomCode);
+    // Entering a match: hide the gear and dismiss any open settings overlay so
+    // it can't intercept the pointer-lock click.
+    showGear(false);
+    closeSettings();
     if (nc) {
       // ONLINE.
       enterOnline(nc, choice);

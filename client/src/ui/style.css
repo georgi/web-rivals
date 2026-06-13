@@ -667,3 +667,160 @@ body {
   letter-spacing: 0.04em;
   text-shadow: 0 2px 12px rgba(0, 0, 0, 0.9);
 }
+
+/* ===== Settings panel (PRD §8). Interactive overlay like the lobby: its root
+   re-enables pointer-events; sliders preview live and persist to localStorage. */
+
+.wr-settings-root {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(900px 600px at 50% 42%, rgba(78, 161, 255, 0.1), transparent 70%),
+    rgba(7, 9, 13, 0.78);
+  pointer-events: auto;
+  z-index: 11;
+  opacity: 1;
+  transition: opacity 180ms ease, background 180ms ease;
+}
+
+/* hide() dims the panel away and lets clicks fall through to the canvas. */
+.wr-settings-root.wr-settings-hidden {
+  opacity: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.wr-settings {
+  width: min(420px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 30px 30px 24px;
+  background: linear-gradient(180deg, rgba(20, 26, 36, 0.96), rgba(13, 17, 24, 0.96));
+  border: 1px solid rgba(78, 161, 255, 0.25);
+  border-radius: 14px;
+  box-shadow:
+    0 24px 70px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(0, 0, 0, 0.4) inset;
+}
+
+.wr-settings-title {
+  margin: 0 0 2px;
+  font: 800 22px system-ui, -apple-system, sans-serif;
+  letter-spacing: 0.14em;
+  text-align: center;
+  color: var(--hud-fg);
+  text-shadow: 0 0 20px rgba(78, 161, 255, 0.4);
+}
+
+.wr-settings-row {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.wr-settings-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.wr-settings-label {
+  font: 600 11px system-ui, -apple-system, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: rgba(245, 247, 250, 0.5);
+}
+.wr-settings-value {
+  font: 700 15px ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  letter-spacing: 0.02em;
+  color: var(--team-a);
+  text-shadow: 0 0 12px rgba(78, 161, 255, 0.35);
+}
+
+/* --- range slider: dark track, team-blue fill-by-thumb --- */
+.wr-settings-slider {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(245, 247, 250, 0.14);
+  outline: none;
+  cursor: pointer;
+}
+.wr-settings-slider:focus-visible {
+  box-shadow: 0 0 0 3px rgba(78, 161, 255, 0.25);
+}
+.wr-settings-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #6db2ff, #2f7ff0);
+  border: 2px solid #0b0d12;
+  box-shadow: 0 2px 8px rgba(47, 127, 240, 0.5);
+  transition: transform 80ms ease;
+}
+.wr-settings-slider::-webkit-slider-thumb:active {
+  transform: scale(1.12);
+}
+.wr-settings-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #6db2ff, #2f7ff0);
+  border: 2px solid #0b0d12;
+  box-shadow: 0 2px 8px rgba(47, 127, 240, 0.5);
+}
+
+.wr-settings-hint {
+  margin-top: 2px;
+  text-align: center;
+  font: 500 12px system-ui, -apple-system, sans-serif;
+  color: rgba(245, 247, 250, 0.42);
+  letter-spacing: 0.02em;
+}
+
+/* DONE button appended into the settings panel (closes the overlay). */
+.wr-settings-done {
+  margin-top: 6px;
+  align-self: center;
+  min-width: 140px;
+}
+
+/* Corner gear button — opens the settings overlay from the lobby. Lives above
+   the lobby panel; hidden during a match (pointer-lock owns the cursor). */
+.wr-gear {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(78, 161, 255, 0.3);
+  background: rgba(13, 17, 24, 0.82);
+  color: var(--hud-fg);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+.wr-gear:hover {
+  background: rgba(20, 28, 40, 0.95);
+  border-color: var(--team-a);
+  transform: rotate(35deg);
+}
+.wr-gear:active {
+  transform: rotate(35deg) scale(0.94);
+}

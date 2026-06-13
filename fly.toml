@@ -1,0 +1,51 @@
+# Fly.io config for the Web Rivals authoritative game server (PRD §3, §21.3).
+#
+# The server holds rooms in MEMORY and runs a fixed-tick sim, so it must be a
+# single, always-on machine — NOT serverless and NOT auto-stopped. See DEPLOY.md.
+#
+# First time:   flyctl launch --no-deploy --copy-config   (then edit `app` below)
+# Deploy:       flyctl deploy
+# Get host:     flyctl status        # -> <app>.fly.dev  (use wss://<app>.fly.dev)
+
+# CHANGE THIS to your real app name (flyctl launch will prompt / set it).
+app = "web-rivals-server"
+
+# Pick the region nearest you for the lowest 1v1 latency.
+# fra = Frankfurt. Others: iad (US-East), lax (US-West), syd (Sydney), nrt (Tokyo).
+primary_region = "fra"
+
+[build]
+  # Build context is the monorepo root; the Dockerfile lives under server/.
+  dockerfile = "server/Dockerfile"
+
+[env]
+  PORT = "8080"
+  NODE_ENV = "production"
+
+# One WebSocket/HTTP service on the internal app port. force_https makes Fly's
+# edge terminate TLS and redirect http->https, so browsers on an https page can
+# reach it over wss:// (required — see DEPLOY.md).
+[http_service]
+  internal_port = 8080
+  force_https = true
+
+  # CRITICAL: keep the machine alive. Rooms are in-memory; if Fly stops the
+  # machine on idle, every active match is lost and reconnects fail until a cold
+  # start. min_machines_running = 1 + auto_stop_machines = "off" pins it on.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # TCP liveness check. We do NOT use an HTTP check: the `ws` server upgrades
+  # connections and answers a plain GET / with "426 Upgrade Required", so an
+  # HTTP check expecting 2xx would flap. A successful TCP connect proves the
+  # listener is up, which is exactly what we want.
+  [[http_service.tcp_checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+
+# Single small machine is plenty for 1v1 rooms. Scale via `flyctl scale` later.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

@@ -1,0 +1,18 @@
+# Build context is the monorepo root (docker build -f server/Dockerfile .), so
+# these patterns are matched against the ROOT tree. Keep the context lean and
+# never ship host node_modules / build output into the image.
+**/node_modules
+**/dist
+**/.vite
+**/coverage
+**/*.tsbuildinfo
+**/*.log
+.git
+.gitignore
+.DS_Store
+.env
+.env.*
+client/dist
+DEPLOY.md
+fly.toml
+netlify.toml

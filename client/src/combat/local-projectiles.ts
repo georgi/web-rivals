@@ -21,6 +21,7 @@ export interface ProjectileHooks {
   targets(): CapsuleTarget[]; // explosion candidates this frame (dummy + local player)
   onDamage(id: number, amount: number): void; // apply damage to entity id
   onImpulse(id: number, impulse: Vec3): void; // apply knockback (localPlayerId -> rocket jump)
+  onDetonate?(pos: Vec3): void; // detonation FX cue (e.g. spatial explosion audio)
 }
 
 // Pre-sized pool: more than enough in flight at once (rocket fires ~0.83/s,
@@ -177,6 +178,7 @@ export class LocalProjectiles {
   private detonate(slot: Slot): void {
     const p = slot.proj;
     this.particles.explosion(p.pos);
+    this.hooks.onDetonate?.(p.pos);
 
     // Build the candidate list from this frame's targets (stable array reuse).
     const targets = this.hooks.targets();
