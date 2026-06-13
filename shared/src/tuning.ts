@@ -206,7 +206,7 @@ export const TUNING: Tuning = {
     splashDamageMin: 10,
     splashDamageMax: 40,
     splashRadius: 3,
-    knockback: 16, // m/s at center -> enough to rocket-jump to center high-ground
+    knockback: 14, // m/s at center -> feet-blast rocket-jump peaks ~3.77m feet, reliably clears the y=3 center high-ground (M2 gate); a plain jump alone does not
     fireInterval: 1.2,
     magSize: 4,
     reserveAmmo: 12,
