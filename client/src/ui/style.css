@@ -1,0 +1,39 @@
+/* Base layout. HUD is a plain DOM overlay above the canvas (PRD §8). */
+:root {
+  --team-a: #4ea1ff;
+  --team-b: #ff5a5a;
+  --hud-fg: #f5f7fa;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #0b0d12;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color: var(--hud-fg);
+  cursor: default;
+}
+
+#game {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+}
+
+#hud,
+#overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  user-select: none;
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@rivals/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx watch src/index.ts",
+    "start:once": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@rivals/shared": "*",
+    "@dimforge/rapier3d-compat": "^0.14.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13"
+  }
+}

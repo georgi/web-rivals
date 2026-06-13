@@ -1,0 +1,27 @@
+{
+  "name": "web-rivals",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser-based Three.js tribute to Roblox Rivals — 1v1 movement-tech arena FPS.",
+  "workspaces": [
+    "shared",
+    "client",
+    "server",
+    "tools"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @rivals/client",
+    "build": "npm run build -w @rivals/client",
+    "server": "npm run start -w @rivals/server",
+    "bot": "npm run bot -w @rivals/tools",
+    "typecheck": "tsc -p shared/tsconfig.json && tsc -p client/tsconfig.json && tsc -p server/tsconfig.json && tsc -p tools/tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "tsx": "^4.19.2",
+    "vitest": "^2.1.8"
+  }
+}

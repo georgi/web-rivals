@@ -1,0 +1,17 @@
+{
+  "name": "@rivals/tools",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bot": "tsx bot.ts"
+  },
+  "dependencies": {
+    "@rivals/shared": "*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13"
+  }
+}
