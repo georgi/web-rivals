@@ -329,7 +329,7 @@ export function stepMovement(
 
   // -- 7. Collide-and-slide move --
   scale(_remaining, s.vel, dt);
-  for (let iter = 0; iter < 3; iter++) {
+  for (let iter = 0; iter < 5; iter++) {
     const rlen = Math.hypot(_remaining.x, _remaining.y, _remaining.z);
     if (rlen < EPSILON) break;
     const hit = world.castCapsule(s.pos, s.capsuleHalf, m.radius, _remaining);
@@ -339,9 +339,24 @@ export function stepMovement(
       s.pos.z += _remaining.z;
       break;
     }
-    // Advance to just shy of the contact (back off by SKIN along the move dir).
     const backoff = rlen > EPSILON ? SKIN / rlen : 0;
-    const moveFrac = hit.fraction - backoff > 0 ? hit.fraction - backoff : 0;
+    if (hit.fraction <= backoff) {
+      // Already resting in contact at the start of the sweep. A swept cast reports
+      // fraction 0 even for motion ALONG the surface, so honoring it deadlocks
+      // tangent sliding — you cannot walk/sprint up a ramp you are standing on.
+      // Depenetrate a hair along the contact normal so the next cast has clearance
+      // to slide freely (or to see a real wall ahead), and strip the into-surface
+      // velocity component. Self-limiting: once the SKIN gap exists, the next cast
+      // returns null (or a real obstacle) and the loop advances normally.
+      s.pos.x += hit.normal.x * SKIN;
+      s.pos.y += hit.normal.y * SKIN;
+      s.pos.z += hit.normal.z * SKIN;
+      projectOntoPlane(_remaining, _remaining, hit.normal);
+      projectOntoPlane(s.vel, s.vel, hit.normal);
+      continue;
+    }
+    // Advance to just shy of the contact (back off by SKIN along the move dir).
+    const moveFrac = hit.fraction - backoff;
     s.pos.x += _remaining.x * moveFrac;
     s.pos.y += _remaining.y * moveFrac;
     s.pos.z += _remaining.z * moveFrac;
