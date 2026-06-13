@@ -54,6 +54,10 @@ function parseVec(envName: string): Vec3 | null {
 }
 const SHOOT_ORIGIN = parseVec('BOT_SHOOT_ORIGIN');
 const SHOOT_DIR = parseVec('BOT_SHOOT_DIR');
+// Tracking-shot mode: fire a point-blank shot at the opponent's last snapshot pos
+// every shoot tick (robust across the per-round spawn alternation). Used to make a
+// stationary HOLD victim die each round so a full best-of-5 actually completes.
+const TRACK_SHOOT = process.env.BOT_TRACK_SHOOT === '1';
 
 const TICK_MS = Math.round(1000 / TUNING.world.inputHz); // ~33ms, 30Hz input
 const EYE = TUNING.movement.eyeHeightStand; // camera offset above feet
@@ -133,6 +137,7 @@ const counts = {
 
 let opponentId = -1;
 let lastOppPos: Vec3 | null = null;
+let lastRoundKey = ''; // last logged round_state key (dedup the heartbeat)
 
 let loopTimer: ReturnType<typeof setInterval> | null = null;
 let stopTimer: ReturnType<typeof setTimeout> | null = null;
@@ -219,7 +224,22 @@ function sendShoot(): void {
   let origin: Vec3;
   let dir: Vec3 = { x: 0, y: 0, z: 0 };
 
-  if (SHOOT_ORIGIN && SHOOT_DIR) {
+  if (TRACK_SHOOT) {
+    // Tracking point-blank shot at the (stationary) opponent's last-known snapshot
+    // center. Spawns alternate corners each round, so a single fixed origin can't
+    // hit every round; instead we fire from 1.5m toward map-center (the clear side,
+    // away from each spawn's L-cover) straight back at the holder. Lag-comp resolves
+    // shoot(origin,dir) against the victim regardless of OUR avatar location, and a
+    // 1.5m point-blank ray has no static between origin and victim. Sign points the
+    // offset toward the origin (0,0): a holder at a -corner is offset +toward 0.
+    if (!lastOppPos) return;
+    const t = lastOppPos;
+    const off = 1.5;
+    const sx = t.x >= 0 ? -1 : 1;
+    const sz = t.z >= 0 ? -1 : 1;
+    origin = { x: t.x + sx * off, y: t.y, z: t.z + sz * off };
+    normalize(dir, { x: t.x - origin.x, y: t.y - origin.y, z: t.z - origin.z });
+  } else if (SHOOT_ORIGIN && SHOOT_DIR) {
     // Explicit fixed shot (duel/damage-path proof): exact origin + dir over the wire.
     origin = SHOOT_ORIGIN;
     normalize(dir, SHOOT_DIR);
@@ -321,8 +341,17 @@ function onServerMessage(msg: ServerMessage): void {
     case 'detonate':
       counts.detonate++;
       break;
+    case 'round_state': {
+      // Log only on a real transition (phase/score/round change) so the bot logs
+      // read as the round-state timeline, not the ~1Hz heartbeat churn.
+      const key = `${msg.phase}|${msg.score[0]}-${msg.score[1]}|r${msg.round}`;
+      if (key !== lastRoundKey) {
+        lastRoundKey = key;
+        log(`ROUNDSTATE phase=${msg.phase} score=${msg.score[0]}-${msg.score[1]} round=${msg.round} timer=${msg.timer}`);
+      }
+      break;
+    }
     case 'pong':
-    case 'round_state':
       break;
   }
 }
@@ -334,7 +363,10 @@ function tick(): void {
 
   // Fire the AR a few times a second once we have an opponent (or always if no
   // opponent and shooting is on — exercises ammo/cooldown gating regardless).
-  if (SHOOT && elapsedTicks % 15 === 0 && elapsedTicks > 15) {
+  // Tracking-shot mode fires faster (every 6 ticks ≈ 5/s, still above AR's 0.1s
+  // cooldown) so a stationary holder dies in ~1.4s and a full bo5 fits a short run.
+  const shootEvery = TRACK_SHOOT ? 6 : 15;
+  if (SHOOT && elapsedTicks % shootEvery === 0 && elapsedTicks > shootEvery) {
     sendShoot();
   }
 

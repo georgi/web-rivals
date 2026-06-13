@@ -9,9 +9,18 @@
 //   3. a hitscan shot down the lane of a rewound opponent deals server-auth damage.
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { decode, fromTuple, type ServerMessage, type InputMsg, type ShootMsg } from '@rivals/shared';
+import { decode, fromTuple, TUNING, type ServerMessage, type InputMsg, type ShootMsg } from '@rivals/shared';
 import { initRapier } from '@rivals/shared';
 import { Room } from './room';
+
+const W = TUNING.world;
+
+// Tick the room until its match reaches `phase` (or a safety bound). The match
+// machine starts in `waiting`, flips to `countdown` (frozen) the first tick two
+// players are present, then `live` after countdownSec.
+function tickUntilPhase(room: Room, phase: string, max = 2000): void {
+  for (let i = 0; i < max && room.matchState.phase !== phase; i++) room.tickOnce();
+}
 
 // Minimal ws stand-in: records every encoded message it's sent.
 class StubSocket {
@@ -122,10 +131,12 @@ describe('Room', () => {
     room.addPlayer(asWs(a), 1, 'Shooter');
     room.addPlayer(asWs(b), 2, 'Victim');
 
-    // The victim sits at its spawn (12,1,12) — an open corner clear of geometry.
-    // addPlayer already recorded that center into lag-comp; tick once so a
-    // second sample lands and the rewind has a bracket.
-    room.tickOnce();
+    // Combat is frozen during the countdown — advance the match to `live` so the
+    // shoot isn't dropped by the freeze gate. The victim sits at its spawn
+    // (12,1,12), an open corner clear of geometry; lag-comp has samples from the
+    // join + every tick, so the rewind has a bracket.
+    tickUntilPhase(room, 'live');
+    expect(room.matchState.phase).toBe('live');
 
     // Shooter fires from (12,1,14) along -z toward the victim at (12,1,12): a
     // short clear gap with no static between them. clientTime is large so
@@ -145,6 +156,95 @@ describe('Room', () => {
     expect(dmg[0].victim).toBe(2);
     expect(dmg[0].source).toBe(1);
     expect(dmg[0].newHp).toBe(100 - 15); // AR damage = 15
+
+    room.destroy();
+  });
+
+  it('runs the match machine: waiting -> countdown -> live, freezing combat in countdown', async () => {
+    const room = await Room.create('TESTD', 'crate');
+    const a = new StubSocket();
+    const b = new StubSocket();
+    room.addPlayer(asWs(a), 1, 'Alice');
+    room.addPlayer(asWs(b), 2, 'Bob');
+
+    // First tick with both present flips waiting -> countdown (frozen).
+    room.tickOnce();
+    expect(room.matchState.phase).toBe('countdown');
+
+    // A shoot during the countdown is dropped by the freeze gate (no damage).
+    room.ingestShoot(1, {
+      t: 'shoot', seq: 1, weapon: 1, origin: [12, 1, 14], dir: [0, 0, -1], clientTime: 1e12,
+    });
+    expect(received(b, 'damage').length).toBe(0);
+
+    // Snapshots during the countdown report zero velocity (opponent renders still).
+    const snapsA = received(a, 'snapshot');
+    expect(snapsA[snapsA.length - 1].players.every((p) => p.vel[0] === 0 && p.vel[1] === 0 && p.vel[2] === 0)).toBe(true);
+
+    // Advance through the countdown -> live, then combat is allowed again.
+    tickUntilPhase(room, 'live');
+    expect(room.matchState.phase).toBe('live');
+
+    room.destroy();
+  });
+
+  it('a kill ends the round, increments the survivor score, and freezes', async () => {
+    const room = await Room.create('TESTE', 'crate');
+    const a = new StubSocket();
+    const b = new StubSocket();
+    room.addPlayer(asWs(a), 1, 'Shooter');
+    room.addPlayer(asWs(b), 2, 'Victim');
+    tickUntilPhase(room, 'live');
+
+    // Drop the victim's HP to lethal with repeated AR shots down the clear lane.
+    let guard = 0;
+    while (room.matchState.phase === 'live' && guard++ < 200) {
+      room.ingestShoot(1, {
+        t: 'shoot', seq: guard, weapon: 1, origin: [12, 1, 14], dir: [0, 0, -1], clientTime: 1e12,
+      });
+      room.tickOnce();
+    }
+
+    // Round ended: victim slot (1) lost, so player 0 (Shooter) took the round.
+    expect(room.matchState.phase).toBe('roundEnd');
+    expect(room.matchState.score[0]).toBe(1);
+    expect(room.matchState.score[1]).toBe(0);
+
+    // A kill was broadcast naming the shooter.
+    const kills = received(b, 'kill');
+    expect(kills.length).toBeGreaterThan(0);
+    expect(kills[kills.length - 1].victim).toBe(2);
+    expect(kills[kills.length - 1].killer).toBe(1);
+
+    room.destroy();
+  });
+
+  it('forfeits after the disconnect grace window and finishes the room', async () => {
+    const room = await Room.create('TESTF', 'crate');
+    const a = new StubSocket();
+    const b = new StubSocket();
+    room.addPlayer(asWs(a), 1, 'Stay');
+    room.addPlayer(asWs(b), 2, 'Leaver');
+    tickUntilPhase(room, 'live');
+
+    // The leaver's socket closes — the slot is HELD for the grace window, so the
+    // match doesn't end instantly (a brief hiccup must not forfeit, PRD §2).
+    room.removePlayer(2);
+    expect(room.isFull).toBe(true); // slot still claimed
+    room.tickOnce();
+    expect(room.matchState.phase).toBe('live'); // still within grace
+
+    // Drive past the grace window -> reducer forfeits to the stayer (slot 0).
+    const ticks = Math.ceil((W.disconnectGraceSec + 0.5) * W.serverHz);
+    for (let i = 0; i < ticks; i++) room.tickOnce();
+    expect(room.matchState.matchWinner).toBe(0);
+    expect(['matchEnd', 'waiting']).toContain(room.matchState.phase);
+
+    // The held slot was vacated at matchEnd; once the match drains the room is
+    // finished and the lobby will reap it.
+    const drain = Math.ceil((W.matchEndSec + 0.5) * W.serverHz);
+    for (let i = 0; i < drain; i++) room.tickOnce();
+    expect(room.isFinished).toBe(true);
 
     room.destroy();
   });

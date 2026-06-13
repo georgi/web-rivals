@@ -38,6 +38,7 @@ import {
 } from '@rivals/shared';
 import { MovementValidator } from './validate.js';
 import { LagComp } from './lagcomp.js';
+import { initMatch, stepMatch, type MatchState, type MatchTickCtx } from './match.js';
 
 const SERVER_DT = 1 / TUNING.world.serverHz; // 1/30s authoritative step
 // Snapshot every Nth tick. 30Hz tick / 20Hz snapshots isn't an integer ratio;
@@ -87,6 +88,18 @@ export interface RoomPlayer {
   cooldowns: Record<WeaponSlot, number>;
   alive: boolean;
   lastSeq: number;
+  // Match-machine bookkeeping. `slot` is the stable 0/1 index the pure reducer
+  // keys score/hp/death arrays on (join order; preserved across the disconnect
+  // grace window). `connected` is false while the socket is gone but the slot is
+  // still held for the grace window. `disconnectedFor` accumulates seconds-gone
+  // in TICK time (dt-driven, not wall clock) so forfeit timing tracks the sim,
+  // not the event-loop schedule. `diedPending` latches a death (HP crossed to 0,
+  // by any path) until the next match step consumes it, so a kill landing between
+  // ticks via ingestShoot is never missed.
+  slot: number;
+  connected: boolean;
+  disconnectedFor: number;
+  diedPending: boolean;
 }
 
 // Player capsule geometry (shared with movement). center.y is the capsule
@@ -113,7 +126,33 @@ export class Room {
   private snapCountdown = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
   private destroyed = false;
-  private phase: 'waiting' | 'live' = 'waiting';
+
+  // The pure 1v1 match/round state machine (server/src/match.ts). The room owns
+  // the MatchState, builds a per-tick MatchTickCtx, and acts on the events.
+  private readonly match: MatchState = initMatch();
+  // Stable slot -> playerId map (join order). A slot stays claimed through the
+  // disconnect grace window so the reducer's score/hp/death arrays line up.
+  private readonly slots: [number, number] = [-1, -1];
+  // While frozen (countdown / roundEnd / matchEnd) the room ignores shoots and
+  // reports zero velocity in snapshots so the opponent renders still.
+  private frozen = true;
+  // The last round-state we sent, so we only re-broadcast on change or ~1Hz.
+  private lastSentPhase: MatchState['phase'] | null = null;
+  private lastSentScore: [number, number] = [-1, -1];
+  private lastSentRound = -1;
+  private roundStateAccum = 0; // counts ticks toward the ~1Hz heartbeat
+  // Set true once the match has truly ended AND its slots are vacated — the
+  // lobby polls this (isFinished) to tear the room down.
+  private finished = false;
+  // True once the match has reached `matchEnd` at least once. A brand-new room
+  // sits in `waiting` with one claimed slot before the second player arrives —
+  // that must NOT count as finished. Only a match that actually ended and then
+  // drained back to waiting with a vacated slot (a forfeit the player never
+  // returned from) finishes the room.
+  private matchEverEnded = false;
+  // Whether a kill was already broadcast for the current round (a lethal hit or
+  // a fall). roundEnd-by-timer-expiry has no kill, so we synthesize one.
+  private killEmittedThisRound = false;
 
   // Scratch reused by the tick so the 30Hz loop allocates nothing per-tick.
   private readonly stepOut: ProjectileStep = { detonated: false, point: { x: 0, y: 0, z: 0 } };
@@ -141,30 +180,54 @@ export class Room {
     return new Room(id, mapId, world, map);
   }
 
+  /** Number of CONNECTED players (sockets live). Disconnected-but-grace excluded. */
   get playerCount(): number {
-    return this.players.size;
+    let n = 0;
+    for (const p of this.players.values()) if (p.connected) n++;
+    return n;
   }
 
+  /** Claimed slots — counts players still held through the disconnect grace window. */
+  private get claimedSlots(): number {
+    return (this.slots[0] >= 0 ? 1 : 0) + (this.slots[1] >= 0 ? 1 : 0);
+  }
+
+  // A room is full when both slots are claimed — including a slot held open for a
+  // disconnected player inside the grace window, so a brief hiccup can't lose the
+  // seat to a stranger (PRD §2).
   get isFull(): boolean {
-    return this.players.size >= MAX_PLAYERS;
+    return this.claimedSlots >= MAX_PLAYERS;
   }
 
   get isEmpty(): boolean {
     return this.players.size === 0;
   }
 
+  /** True once the match is over and slots vacated — the lobby tears us down. */
+  get isFinished(): boolean {
+    return this.finished;
+  }
+
+  /** Read-only match snapshot (phase/score/round/timer) — for tests + telemetry. */
+  get matchState(): Readonly<MatchState> {
+    return this.match;
+  }
+
   hasPlayer(id: number): boolean {
     return this.players.has(id);
   }
 
-  /** Index of the player in join order (0 or 1) — used for score arrays. */
+  /** Stable slot (0 or 1) the player holds — used for the reducer score arrays. */
   private slotIndex(id: number): number {
-    let i = 0;
-    for (const pid of this.players.keys()) {
-      if (pid === id) return i;
-      i++;
-    }
+    if (this.slots[0] === id) return 0;
+    if (this.slots[1] === id) return 1;
     return -1;
+  }
+
+  /** The player currently in a given slot, if any. */
+  private playerInSlot(slot: number): RoomPlayer | undefined {
+    const id = this.slots[slot];
+    return id >= 0 ? this.players.get(id) : undefined;
   }
 
   // ---- membership ----
@@ -172,8 +235,11 @@ export class Room {
   /** Add a player up to MAX_PLAYERS. Returns the spawned player or null if full. */
   addPlayer(ws: WebSocket, id: number, name: string): RoomPlayer | null {
     if (this.isFull) return null;
-    const spawnIdx = this.players.size % this.map.spawns.length;
-    const spawn = this.map.spawns[spawnIdx];
+    // Claim the first free stable slot (preserved across the grace window).
+    const slot = this.slots[0] < 0 ? 0 : 1;
+    this.slots[slot] = id;
+
+    const spawn = this.map.spawns[slot % this.map.spawns.length];
     const pos = fromTuple(spawn.pos);
 
     const player: RoomPlayer = {
@@ -192,17 +258,18 @@ export class Room {
       cooldowns: { 1: 0, 2: 0, 3: 0, 4: 0 },
       alive: true,
       lastSeq: 0,
+      slot,
+      connected: true,
+      disconnectedFor: 0,
+      diedPending: false,
     };
     this.players.set(id, player);
 
     this.validator.reset(id, pos);
     this.lagcomp.record(id, this.center(pos), CAP_RADIUS, CAP_HALF, this.now());
 
-    // Round stub (full machine is M4): go live as soon as 2 players are present.
-    if (this.players.size >= MAX_PLAYERS) this.phase = 'live';
-
     // Tell the newcomer about any existing opponent, and existing players about
-    // the newcomer.
+    // the newcomer. (The match machine decides when the round actually starts.)
     for (const other of this.players.values()) {
       if (other.id === id) continue;
       this.sendTo(player, { t: 'opponent', present: true, name: other.name, id: other.id });
@@ -213,19 +280,49 @@ export class Room {
     return player;
   }
 
+  /**
+   * The socket closed. We do NOT tear the match down here — instead we flag the
+   * player disconnected and keep their slot for the grace window (PRD §2), so a
+   * brief tab hiccup doesn't forfeit. The match reducer watches `disconnectedFor`
+   * and emits `matchEnd` once grace elapses; the tick then vacates the slot.
+   *
+   * Exception: during a non-playing phase (waiting / matchEnd / a finished match)
+   * there's nothing to protect, so we vacate immediately and the lobby can reuse
+   * or destroy the room.
+   */
   removePlayer(id: number): void {
+    const player = this.players.get(id);
+    if (!player || !player.connected) return;
+
+    const playing =
+      this.match.phase === 'countdown' ||
+      this.match.phase === 'live' ||
+      this.match.phase === 'roundEnd';
+
+    // Tell the opponent the seat went dark (they may reconnect within grace).
+    for (const other of this.players.values()) {
+      if (other.id === id) continue;
+      this.sendTo(other, { t: 'opponent', present: false, name: player.name, id });
+    }
+
+    if (playing) {
+      player.connected = false;
+      player.disconnectedFor = 0; // accumulates in tick time from here
+      // Keep the slot, lag-comp entry, and validator state for the grace window.
+    } else {
+      this.vacateSlot(id);
+    }
+  }
+
+  /** Truly remove a player: free the slot, lag-comp, validator, and trace entity. */
+  private vacateSlot(id: number): void {
     const player = this.players.get(id);
     if (!player) return;
     this.players.delete(id);
+    if (this.slots[player.slot] === id) this.slots[player.slot] = -1;
     this.validator.reset(id, { x: 0, y: 0, z: 0 });
     this.lagcomp.remove(id);
     this.world.removeEntity(id);
-
-    // Notify the remaining player the opponent left.
-    for (const other of this.players.values()) {
-      this.sendTo(other, { t: 'opponent', present: false, name: player.name, id });
-    }
-    if (this.players.size < MAX_PLAYERS) this.phase = 'waiting';
     this.broadcastRoundState();
   }
 
@@ -283,8 +380,10 @@ export class Room {
   }
 
   ingestShoot(id: number, msg: ShootMsg): void {
+    // No shooting while the round is frozen (countdown / roundEnd / matchEnd).
+    if (this.frozen) return;
     const shooter = this.players.get(id);
-    if (!shooter || !shooter.alive) return;
+    if (!shooter || !shooter.alive || !shooter.connected) return;
 
     const weapon = msg.weapon;
     const cfg = this.cfg[weapon];
@@ -382,7 +481,13 @@ export class Room {
 
   // ---- damage / death ----
 
-  private applyDamage(victim: RoomPlayer, amount: number, source: number, weapon: WeaponSlot | 0): void {
+  private applyDamage(
+    victim: RoomPlayer,
+    amount: number,
+    source: number,
+    weapon: WeaponSlot | 0,
+    fall = false,
+  ): void {
     if (amount <= 0 || !victim.alive) return;
     victim.hp -= amount;
     if (victim.hp < 0) victim.hp = 0;
@@ -404,13 +509,9 @@ export class Room {
 
     if (victim.hp <= 0) {
       victim.alive = false;
-      this.broadcast({
-        t: 'kill',
-        killer: source,
-        victim: victim.id,
-        weapon,
-        fall: source === -1,
-      });
+      victim.diedPending = true; // consumed as a rising edge by the next match step
+      this.broadcast({ t: 'kill', killer: source, victim: victim.id, weapon, fall });
+      this.killEmittedThisRound = true;
     }
   }
 
@@ -449,7 +550,14 @@ export class Room {
     const now = this.now();
     this.tick++;
 
-    // Weapon cooldowns (server-side cadence enforcement).
+    // Accumulate disconnect time in TICK seconds (not wall clock) so the grace
+    // window tracks the sim. A reconnect would clear `connected` back to true.
+    for (const p of this.players.values()) {
+      if (!p.connected) p.disconnectedFor += dt;
+    }
+
+    // Weapon cooldowns (server-side cadence enforcement). Frozen or not, cooling
+    // down is harmless and keeps cadence honest across phase boundaries.
     for (const p of this.players.values()) {
       for (const slot of [1, 2, 3, 4] as WeaponSlot[]) {
         if (p.cooldowns[slot] > 0) {
@@ -459,20 +567,34 @@ export class Room {
       }
     }
 
-    // Step server projectiles; resolve detonations against current capsules.
-    this.stepProjectiles(dt, now);
+    // Damage-producing sim only runs when the round is LIVE (not frozen). During
+    // countdown / roundEnd / matchEnd we neither advance projectiles nor apply
+    // fall kills, so nothing changes HP while the round is paused.
+    if (!this.frozen) {
+      // Step server projectiles; resolve detonations against current capsules.
+      this.stepProjectiles(dt, now);
 
-    // Record current capsule centers into lag-comp (rewind buffer).
+      // Fall-out-of-world kill (killY): server-auth. Credit the opponent (the
+      // surviving slot) so the score goes the right way; flag it a fall.
+      for (const p of this.players.values()) {
+        if (p.alive && p.connected && p.pos.y < this.map.killY) {
+          const opp = this.playerInSlot(p.slot === 0 ? 1 : 0);
+          this.applyDamage(p, p.hp, opp ? opp.id : -1, 0, true);
+        }
+      }
+    }
+
+    // Record current capsule centers into lag-comp (rewind buffer) every tick —
+    // rewind must work the instant the round goes live.
     for (const p of this.players.values()) {
       this.lagcomp.record(p.id, this.center(p.pos), CAP_RADIUS, CAP_HALF, now);
     }
 
-    // Fall-out-of-world kill (killY): server-auth, source = world.
-    for (const p of this.players.values()) {
-      if (p.alive && p.pos.y < this.map.killY) {
-        this.applyDamage(p, p.hp, -1, 0);
-      }
-    }
+    // Drive the pure match/round machine, then act on its events.
+    this.stepMatchMachine(dt);
+
+    // Round-state broadcast: on phase/score/round change, else a ~1Hz heartbeat.
+    this.maybeBroadcastRoundState();
 
     // Snapshot cadence (~20Hz): emit when the per-tick countdown reaches 0.
     if (this.snapCountdown <= 0) {
@@ -481,6 +603,118 @@ export class Room {
       this.snapAccum++;
     }
     this.snapCountdown--;
+  }
+
+  /**
+   * Build this tick's MatchTickCtx from the room's authoritative state, advance
+   * the pure reducer, and apply the events it returns (respawn/freeze/unfreeze,
+   * round/match end). Death is reported via the `diedPending` latch so a kill
+   * that landed between ticks (ingestShoot) is consumed exactly once.
+   */
+  private stepMatchMachine(dt: number): void {
+    const p0 = this.playerInSlot(0);
+    const p1 = this.playerInSlot(1);
+
+    const ctx: MatchTickCtx = {
+      bothConnected: !!p0 && !!p1 && p0.connected && p1.connected,
+      hp: [p0?.hp ?? 0, p1?.hp ?? 0],
+      // `diedPending` latched the HP-crossing (set by applyDamage on the killing
+      // blow, whenever it landed — a between-ticks ingestShoot included). Consume
+      // it here so it is reported exactly once as the death's rising edge.
+      died: [p0?.diedPending ?? false, p1?.diedPending ?? false],
+      disconnectedFor: [
+        p0 && !p0.connected ? p0.disconnectedFor : 0,
+        p1 && !p1.connected ? p1.disconnectedFor : 0,
+      ],
+    };
+    if (p0) p0.diedPending = false;
+    if (p1) p1.diedPending = false;
+
+    const events = stepMatch(this.match, ctx, dt);
+    for (const ev of events) {
+      switch (ev.type) {
+        case 'reset':
+          this.resetRound();
+          this.frozen = true;
+          break;
+        case 'roundStart':
+          this.frozen = false;
+          break;
+        case 'roundEnd':
+          // If nobody died (timer expiry), synthesize the round-ending kill so
+          // clients still get a kill feed entry. winner -1 (draw) emits none.
+          if (!this.killEmittedThisRound && ev.winner !== -1) {
+            const loser = this.playerInSlot(ev.winner === 0 ? 1 : 0);
+            const winner = this.playerInSlot(ev.winner);
+            if (loser) {
+              loser.alive = false;
+              this.broadcast({
+                t: 'kill',
+                killer: winner ? winner.id : -1,
+                victim: loser.id,
+                weapon: 0,
+                fall: false,
+              });
+            }
+          }
+          this.frozen = true;
+          break;
+        case 'matchEnd':
+          this.frozen = true;
+          this.matchEverEnded = true;
+          // The grace-window forfeit path drove us here with a slot still gone;
+          // vacate any disconnected slot so the room can drain to `finished`.
+          this.handleMatchEnd();
+          break;
+      }
+    }
+
+    // Once the machine drains a finished match back to `waiting` while a slot is
+    // empty (the forfeiting player never came back), the room has nothing left to
+    // do — flag it finished so the lobby tears it down.
+    if (this.matchEverEnded && this.match.phase === 'waiting' && this.claimedSlots < MAX_PLAYERS) {
+      this.finished = true;
+    }
+  }
+
+  /** matchEnd reached: drop any slot still held by a disconnected player. */
+  private handleMatchEnd(): void {
+    for (const p of [...this.players.values()]) {
+      if (!p.connected) this.vacateSlot(p.id);
+    }
+  }
+
+  /**
+   * Respawn BOTH players for a new round: alternate spawns by round parity,
+   * full HP, fresh ammo/weapon, zero velocity, alive. Resets the per-round kill
+   * latch. Movement is client-auth, but the freeze + snapshot velocity-zeroing
+   * holds everyone still until roundStart.
+   */
+  private resetRound(): void {
+    this.killEmittedThisRound = false;
+    // Alternate which spawn each slot uses per round so neither side is glued to
+    // one corner across a match.
+    const flip = this.match.round % 2 === 0 ? 1 : 0;
+    for (const p of this.players.values()) {
+      const spawnIdx = (p.slot + flip) % this.map.spawns.length;
+      const spawn = this.map.spawns[spawnIdx];
+      const pos = fromTuple(spawn.pos);
+      p.pos = pos;
+      p.vel = { x: 0, y: 0, z: 0 };
+      p.yaw = (spawn.yaw * Math.PI) / 180;
+      p.pitch = 0;
+      p.hp = TUNING.combat.spawnHealth;
+      p.alive = true;
+      p.diedPending = false;
+      p.weapon = 1;
+      p.ammo = this.freshAmmo();
+      p.cooldowns = { 1: 0, 2: 0, 3: 0, 4: 0 };
+      p.anim = 'idle';
+      // Reset the movement validator's accepted state to the spawn so the next
+      // client input is measured from here, and seed lag-comp at the new spot.
+      this.validator.reset(p.id, pos);
+      this.lagcomp.record(p.id, this.center(pos), CAP_RADIUS, CAP_HALF, this.now());
+    }
   }
 
   private stepProjectiles(dt: number, now: number): void {
@@ -539,13 +773,17 @@ export class Room {
   private sendSnapshot(now: number): void {
     const players: PlayerSnap[] = [];
     for (const p of this.players.values()) {
+      // While frozen the round is paused: report zero velocity (and an idle
+      // anim) so the opponent renders still on the countdown / round-end screen,
+      // even though movement is otherwise client-authoritative.
+      const frozen = this.frozen;
       players.push({
         id: p.id,
         pos: toTuple(p.pos),
-        vel: toTuple(p.vel),
+        vel: frozen ? [0, 0, 0] : toTuple(p.vel),
         yaw: p.yaw,
         pitch: p.pitch,
-        anim: p.anim,
+        anim: frozen ? 'idle' : p.anim,
         hp: p.hp,
         weapon: p.weapon,
       });
@@ -560,14 +798,39 @@ export class Room {
     this.broadcast({ t: 'snapshot', tick: this.tick, serverTime: now, players, projectiles });
   }
 
+  /** Send the current round-state unconditionally (membership changes). */
   private broadcastRoundState(): void {
+    const m = this.match;
+    this.lastSentPhase = m.phase;
+    this.lastSentScore = [m.score[0], m.score[1]];
+    this.lastSentRound = m.round;
+    this.roundStateAccum = 0;
     this.broadcast({
       t: 'round_state',
-      phase: this.phase === 'live' ? 'live' : 'waiting',
-      score: [0, 0],
-      timer: 0,
-      round: 1,
+      phase: m.phase,
+      score: [m.score[0], m.score[1]],
+      timer: Math.max(0, Math.ceil(m.timer)),
+      round: m.round,
     });
+  }
+
+  /**
+   * Broadcast round-state when phase/score/round changes, otherwise as a ~1Hz
+   * heartbeat (so the client countdown clock stays in sync without per-tick
+   * string churn). Called once per tick.
+   */
+  private maybeBroadcastRoundState(): void {
+    const m = this.match;
+    const changed =
+      m.phase !== this.lastSentPhase ||
+      m.score[0] !== this.lastSentScore[0] ||
+      m.score[1] !== this.lastSentScore[1] ||
+      m.round !== this.lastSentRound;
+
+    this.roundStateAccum++;
+    const heartbeat = this.roundStateAccum >= TUNING.world.serverHz; // ~1Hz
+
+    if (changed || heartbeat) this.broadcastRoundState();
   }
 
   // ---- transport ----
@@ -599,6 +862,15 @@ export class Room {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+    // Close any sockets still attached (e.g. the survivor of a forfeit) so their
+    // client learns the match is over rather than hanging on a silent room.
+    for (const p of this.players.values()) {
+      try {
+        p.ws.close();
+      } catch {
+        /* already closing */
+      }
     }
     this.players.clear();
     this.projectiles.length = 0;

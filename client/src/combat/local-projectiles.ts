@@ -215,6 +215,16 @@ export class LocalProjectiles {
     slot.mesh.visible = false;
   }
 
+  // Retire every live projectile (e.g. on a session/match teardown) so stale
+  // rockets/grenades never linger into the next match.
+  clear(): void {
+    for (const slot of this.slots) {
+      slot.active = false;
+      slot.proj.alive = false;
+      slot.mesh.visible = false;
+    }
+  }
+
   // Distance from `point` to the capsule's vertical core segment < radius + slop.
   private withinCapsule(point: Vec3, t: CapsuleTarget, slop: number): boolean {
     const segBottom = t.center.y - t.halfHeight;

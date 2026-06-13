@@ -196,3 +196,474 @@ body {
   color: var(--hud-fg);
   text-shadow: 0 2px 6px rgba(0, 0, 0, 0.8);
 }
+
+/* ===== Lobby / landing page (PRD §1, §6, §8). Interactive, unlike the HUD:
+   the panel re-enables pointer-events. Team-blue accent over the dark backdrop. */
+
+.wr-lobby-root {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* A soft radial glow + dim wash so the arena reads behind a focused panel. */
+  background:
+    radial-gradient(900px 600px at 50% 38%, rgba(78, 161, 255, 0.12), transparent 70%),
+    rgba(7, 9, 13, 0.78);
+  pointer-events: auto;
+  z-index: 10;
+  opacity: 1;
+  transition: opacity 220ms ease, background 220ms ease;
+}
+
+/* hide() dims the panel away and lets clicks fall through to the canvas. */
+.wr-lobby-root.wr-lobby-hidden {
+  opacity: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.wr-lobby {
+  width: min(420px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 32px 30px 26px;
+  background: linear-gradient(180deg, rgba(20, 26, 36, 0.96), rgba(13, 17, 24, 0.96));
+  border: 1px solid rgba(78, 161, 255, 0.25);
+  border-radius: 14px;
+  box-shadow:
+    0 24px 70px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(0, 0, 0, 0.4) inset;
+  transition: opacity 160ms ease, filter 160ms ease;
+}
+
+/* While connecting / matchmaking, soften + lock the controls. */
+.wr-lobby.wr-lobby-busy {
+  opacity: 0.55;
+  filter: saturate(0.7);
+  pointer-events: none;
+}
+
+.wr-lobby-title {
+  margin: 0;
+  font: 800 34px system-ui, -apple-system, sans-serif;
+  letter-spacing: 0.14em;
+  text-align: center;
+  color: var(--hud-fg);
+  text-shadow: 0 0 24px rgba(78, 161, 255, 0.45);
+}
+
+.wr-lobby-tagline {
+  margin: -6px 0 6px;
+  font: 500 13px system-ui, -apple-system, sans-serif;
+  text-align: center;
+  color: rgba(245, 247, 250, 0.62);
+  letter-spacing: 0.02em;
+}
+
+/* --- name field --- */
+.wr-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wr-field-label {
+  font: 600 11px system-ui, -apple-system, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: rgba(245, 247, 250, 0.5);
+}
+
+.wr-input {
+  width: 100%;
+  padding: 11px 13px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(245, 247, 250, 0.16);
+  border-radius: 8px;
+  color: var(--hud-fg);
+  font: 600 16px system-ui, -apple-system, sans-serif;
+  letter-spacing: 0.01em;
+  outline: none;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.wr-input::placeholder {
+  color: rgba(245, 247, 250, 0.3);
+}
+.wr-input:focus {
+  border-color: var(--team-a);
+  box-shadow: 0 0 0 3px rgba(78, 161, 255, 0.2);
+}
+.wr-input-bad {
+  border-color: var(--team-b);
+  box-shadow: 0 0 0 3px rgba(255, 90, 90, 0.22);
+}
+
+/* --- buttons --- */
+.wr-btn {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 12px 16px;
+  font: 700 14px system-ui, -apple-system, sans-serif;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform 80ms ease, background 120ms ease, border-color 120ms ease;
+}
+.wr-btn:active {
+  transform: translateY(1px);
+}
+.wr-btn-sm {
+  padding: 10px 14px;
+  font-size: 13px;
+}
+
+.wr-btn-primary {
+  background: linear-gradient(180deg, #5aa8ff, #2f7ff0);
+  color: #06101f;
+  box-shadow: 0 6px 18px rgba(47, 127, 240, 0.35);
+}
+.wr-btn-primary:hover {
+  background: linear-gradient(180deg, #6db2ff, #3a8af6);
+}
+
+.wr-btn-ghost {
+  background: rgba(78, 161, 255, 0.08);
+  border-color: rgba(78, 161, 255, 0.35);
+  color: var(--hud-fg);
+}
+.wr-btn-ghost:hover {
+  background: rgba(78, 161, 255, 0.16);
+  border-color: var(--team-a);
+}
+
+/* --- divider --- */
+.wr-divider {
+  position: relative;
+  text-align: center;
+  margin: 4px 0 0;
+}
+.wr-divider::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: rgba(245, 247, 250, 0.12);
+}
+.wr-divider-label {
+  position: relative;
+  padding: 0 10px;
+  background: linear-gradient(180deg, rgba(17, 22, 31, 1), rgba(15, 19, 27, 1));
+  font: 500 11px system-ui, -apple-system, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgba(245, 247, 250, 0.4);
+}
+
+/* --- generated private-room code block --- */
+.wr-code-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px dashed rgba(78, 161, 255, 0.35);
+  border-radius: 10px;
+}
+.wr-code-hint {
+  font: 500 12px system-ui, -apple-system, sans-serif;
+  color: rgba(245, 247, 250, 0.6);
+}
+.wr-code-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.wr-code {
+  flex: 1;
+  font: 800 26px ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  letter-spacing: 0.32em;
+  color: var(--team-a);
+  text-shadow: 0 0 16px rgba(78, 161, 255, 0.4);
+  user-select: all;
+}
+.wr-copy {
+  appearance: none;
+  border: 1px solid rgba(245, 247, 250, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--hud-fg);
+  border-radius: 6px;
+  padding: 7px 12px;
+  font: 600 12px system-ui, -apple-system, sans-serif;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.wr-copy:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+.wr-copy.wr-copy-done {
+  border-color: #56d364;
+  color: #56d364;
+}
+
+/* --- join with code --- */
+.wr-join-row {
+  display: flex;
+  gap: 10px;
+}
+.wr-join-input {
+  flex: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.28em;
+  text-align: center;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+.wr-join-input::placeholder {
+  letter-spacing: 0.12em;
+}
+
+/* --- status line --- */
+.wr-status {
+  min-height: 18px;
+  text-align: center;
+  font: 500 13px system-ui, -apple-system, sans-serif;
+  color: var(--team-a);
+  letter-spacing: 0.02em;
+}
+
+/* ===== Round / match HUD (M4). All under #hud => pointer-events:none. ===== */
+
+/* --- Top-center round score, label, and timer (sits below weapon name) --- */
+.hud-round {
+  position: absolute;
+  left: 50%;
+  top: 46px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+.hud-score {
+  font: 800 34px ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  letter-spacing: 0.04em;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.85);
+  line-height: 1;
+}
+.hud-score .hud-score-a {
+  color: var(--team-a);
+}
+.hud-score .hud-score-b {
+  color: var(--team-b);
+}
+.hud-score .hud-score-sep {
+  margin: 0 12px;
+  opacity: 0.55;
+  color: var(--hud-fg);
+}
+.hud-round-label {
+  margin-top: 3px;
+  font: 700 11px system-ui, -apple-system, sans-serif;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  opacity: 0.65;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+}
+.hud-round-timer {
+  margin-top: 4px;
+  font: 700 20px ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  letter-spacing: 0.04em;
+  opacity: 0;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.85);
+  transition: opacity 150ms linear, color 150ms linear;
+}
+.hud-round-timer.show {
+  opacity: 0.9;
+}
+.hud-round-timer.urgent {
+  color: var(--team-b);
+}
+
+/* --- Big centered transient banner (countdown / round / win) --- */
+.hud-banner {
+  position: absolute;
+  left: 50%;
+  top: 38%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  opacity: 0;
+  transition: opacity 220ms ease-out;
+}
+.hud-banner.show {
+  opacity: 1;
+}
+.hud-banner-main {
+  font: 800 64px system-ui, -apple-system, sans-serif;
+  letter-spacing: 0.02em;
+  color: var(--hud-fg);
+  text-shadow: 0 4px 22px rgba(0, 0, 0, 0.9), 0 0 2px rgba(0, 0, 0, 0.9);
+  line-height: 1.05;
+}
+.hud-banner-sub {
+  margin-top: 8px;
+  font: 600 20px system-ui, -apple-system, sans-serif;
+  letter-spacing: 0.04em;
+  opacity: 0.8;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.85);
+}
+.hud-banner.pop .hud-banner-main {
+  animation: hud-banner-pop 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes hud-banner-pop {
+  0% {
+    transform: scale(1.45);
+    opacity: 0.2;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* --- Top-right kill feed --- */
+.hud-killfeed {
+  position: absolute;
+  right: 22px;
+  top: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+}
+.hud-kill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.5);
+  font: 600 14px system-ui, -apple-system, sans-serif;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateX(8px);
+  transition: opacity 200ms ease-out, transform 200ms ease-out;
+}
+.hud-kill.show {
+  opacity: 1;
+  transform: translateX(0);
+}
+.hud-kill .hud-kill-killer {
+  color: var(--team-a);
+}
+.hud-kill .hud-kill-victim {
+  color: var(--team-b);
+}
+.hud-kill .hud-kill-weapon {
+  opacity: 0.85;
+  font-weight: 700;
+}
+
+/* --- Directional damage indicators: red edge gradients per quadrant --- */
+.hud-dmg {
+  position: absolute;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.hud-dmg.show {
+  animation: hud-dmg-fade 650ms ease-out forwards;
+}
+@keyframes hud-dmg-fade {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+.hud-dmg-front {
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 26vh;
+  background: linear-gradient(to bottom, rgba(255, 30, 30, 0.5), rgba(255, 30, 30, 0));
+}
+.hud-dmg-back {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 26vh;
+  background: linear-gradient(to top, rgba(255, 30, 30, 0.5), rgba(255, 30, 30, 0));
+}
+.hud-dmg-left {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 22vw;
+  background: linear-gradient(to right, rgba(255, 30, 30, 0.5), rgba(255, 30, 30, 0));
+}
+.hud-dmg-right {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 22vw;
+  background: linear-gradient(to left, rgba(255, 30, 30, 0.5), rgba(255, 30, 30, 0));
+}
+
+/* --- Match-end scoreboard overlay (~5s) --- */
+.hud-scoreboard {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 26px;
+  background: rgba(7, 9, 14, 0.72);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 260ms ease-out, visibility 260ms;
+}
+.hud-scoreboard.show {
+  opacity: 1;
+  visibility: visible;
+}
+.hud-sb-result {
+  font: 800 72px system-ui, -apple-system, sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-shadow: 0 4px 26px rgba(0, 0, 0, 0.9);
+}
+.hud-sb-result.win {
+  color: #6ee787;
+}
+.hud-sb-result.lose {
+  color: var(--team-b);
+}
+.hud-sb-row {
+  display: flex;
+  align-items: center;
+  gap: 40px;
+}
+.hud-sb-name {
+  font: 700 26px system-ui, -apple-system, sans-serif;
+  min-width: 6ch;
+  text-align: center;
+}
+.hud-sb-name-a {
+  color: var(--team-a);
+  text-align: right;
+}
+.hud-sb-name-b {
+  color: var(--team-b);
+  text-align: left;
+}
+.hud-sb-score {
+  font: 800 56px ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  letter-spacing: 0.04em;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.9);
+}

@@ -71,6 +71,22 @@ function destroyIfEmpty(room: Room): void {
   console.log(`[server] room ${room.id} empty -> destroyed`);
 }
 
+// Reaper: a room that drained to empty or finished (a forfeit drained a held
+// slot, or both players left) gets destroyed. We can't tear down inside the
+// room's own tick from the lobby, so we sweep here on a slow timer. Rooms in a
+// grace window keep their disconnected slot and are NOT reaped until they
+// finish (the match reducer forfeits after the grace, then the room finishes).
+const reaper = setInterval(() => {
+  for (const room of [...rooms.values()]) {
+    if (room.isEmpty || room.isFinished) {
+      room.destroy();
+      rooms.delete(room.id);
+      console.log(`[server] room ${room.id} ${room.isFinished ? 'finished' : 'empty'} -> destroyed`);
+    }
+  }
+}, 1000);
+reaper.unref?.();
+
 wss.on('connection', (ws: WebSocket) => {
   const playerId = nextId++;
   let joined = false;
