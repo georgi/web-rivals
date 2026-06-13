@@ -138,6 +138,11 @@ export interface DetonateMsg {
   id: number;
   pos: Vec3Tuple;
   kind: 'rocket' | 'grenade';
+  // Per-target velocity deltas (server-authoritative knockback). Each client
+  // applies the impulse for the players it owns/renders locally so opponent
+  // knockback comes from the server while staying snappy. Additive/optional so
+  // older clients ignore it (M3, server-authoritative damage path).
+  impulses?: Array<{ id: number; impulse: Vec3Tuple }>;
 }
 
 export interface KillMsg {

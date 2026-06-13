@@ -4,12 +4,22 @@
 import GUI from 'lil-gui';
 import { TUNING } from '@rivals/shared';
 
+/** Network graph-lite readout (PRD §22): RTT + snapshot age + the dev latency gate. */
+export interface NetReadout {
+  mode: string;
+  rttMs: number;
+  snapAgeMs: number;
+  delayMs: number;
+  dropRate: number;
+}
+
 export interface DebugReadout {
   speed: number;
   state: string;
   grounded: boolean;
   fov: number;
   pos: { x: number; y: number; z: number };
+  net?: NetReadout;
 }
 
 // Live readout backing object — controllers bind to these and we overwrite them.
@@ -21,6 +31,10 @@ interface ReadoutBacking {
   x: number;
   y: number;
   z: number;
+  netMode: string;
+  rttMs: number;
+  snapAgeMs: number;
+  netGate: string;
 }
 
 export function createDebugPanel(getReadout: () => DebugReadout): {
@@ -53,6 +67,10 @@ export function createDebugPanel(getReadout: () => DebugReadout): {
     x: 0,
     y: 0,
     z: 0,
+    netMode: '',
+    rttMs: 0,
+    snapAgeMs: 0,
+    netGate: '',
   };
   const out = gui.addFolder('Readout');
   const cSpeed = out.add(r, 'speed').decimals(2).disable();
@@ -62,6 +80,13 @@ export function createDebugPanel(getReadout: () => DebugReadout): {
   const cX = out.add(r, 'x').decimals(2).disable();
   const cY = out.add(r, 'y').decimals(2).disable();
   const cZ = out.add(r, 'z').decimals(2).disable();
+
+  // Network graph-lite (PRD §22): mode, RTT, ms since last snapshot, dev gate.
+  const netOut = gui.addFolder('Network');
+  const cNetMode = netOut.add(r, 'netMode').name('mode').disable();
+  const cRtt = netOut.add(r, 'rttMs').name('rtt (ms)').decimals(0).disable();
+  const cSnapAge = netOut.add(r, 'snapAgeMs').name('snap age (ms)').decimals(0).disable();
+  const cNetGate = netOut.add(r, 'netGate').name('dev gate').disable();
 
   let rafId = 0;
   const tick = (): void => {
@@ -81,6 +106,18 @@ export function createDebugPanel(getReadout: () => DebugReadout): {
       cX.updateDisplay();
       cY.updateDisplay();
       cZ.updateDisplay();
+
+      if (d.net) {
+        r.netMode = d.net.mode;
+        r.rttMs = d.net.rttMs;
+        // Infinity (no snapshot yet) reads as a long dash rather than "Infinity".
+        r.snapAgeMs = Number.isFinite(d.net.snapAgeMs) ? d.net.snapAgeMs : 0;
+        r.netGate = `${d.net.delayMs}ms / ${Math.round(d.net.dropRate * 100)}%`;
+        cNetMode.updateDisplay();
+        cRtt.updateDisplay();
+        cSnapAge.updateDisplay();
+        cNetGate.updateDisplay();
+      }
     }
     rafId = requestAnimationFrame(tick);
   };
