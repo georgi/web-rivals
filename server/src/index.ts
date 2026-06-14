@@ -121,7 +121,9 @@ wss.on('connection', (ws: WebSocket) => {
             return;
           }
           playerRooms.set(playerId, room);
-          console.log(`[server] ${name} (#${playerId}) joined room ${room.id} (${room.playerCount}/2)`);
+          console.log(
+            `[server] ${name} (#${playerId}) joined room ${room.id} (${room.playerCount}/${TUNING.world.maxPlayers})`,
+          );
           ws.send(
             encode({
               t: 'joined',
@@ -129,7 +131,7 @@ wss.on('connection', (ws: WebSocket) => {
               roomId: room.id,
               mapId: room.mapId,
               serverTime: nowMs(),
-              youAreReady: room.playerCount >= 2,
+              youAreReady: room.playerCount >= TUNING.world.warmupMinPlayers,
             }),
           );
         })
