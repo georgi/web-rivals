@@ -19,6 +19,7 @@ import {
   makeProjectile,
   stepProjectile,
   computeExplosion,
+  projectilePlayerHit,
   RapierTraceWorld,
   type Vec3,
   type Vec3Tuple,
@@ -136,25 +137,35 @@ export class Room {
   private readonly capsScratch: PlayerCapsule[] = [];
 
   // The room clock (ms). The server timestamps everything off this so a single
-  // monotonic source drives lag-comp, ping/pong, and snapshots.
+  // monotonic source drives lag-comp, ping/pong, and snapshots. Injectable so
+  // tests can drive a deterministic clock (lag-comp rewind is time-sensitive).
+  private readonly clock: () => number;
   private now(): number {
-    return Number(process.hrtime.bigint() / 1_000_000n);
+    return this.clock();
   }
 
-  private constructor(id: string, mapId: string, world: RapierTraceWorld, map: MapData) {
+  private constructor(
+    id: string,
+    mapId: string,
+    world: RapierTraceWorld,
+    map: MapData,
+    clock?: () => number,
+  ) {
     this.id = id;
     this.mapId = mapId;
     this.world = world;
     this.map = map;
     this.validator = new MovementValidator(world);
     this.lagcomp = new LagComp();
+    this.clock = clock ?? (() => Number(process.hrtime.bigint() / 1_000_000n));
   }
 
-  /** Build a room: load the map and the (async) Rapier trace world for it. */
-  static async create(id: string, mapId: string): Promise<Room> {
+  /** Build a room: load the map and the (async) Rapier trace world for it.
+   *  `clock` overrides the wall clock (ms) — tests inject a controllable one. */
+  static async create(id: string, mapId: string, clock?: () => number): Promise<Room> {
     const map = getMap(mapId);
     const world = await RapierTraceWorld.create(map.solids);
-    return new Room(id, mapId, world, map);
+    return new Room(id, mapId, world, map, clock);
   }
 
   /** Number of players in the room (FFA has no grace seats). */
@@ -379,9 +390,14 @@ export class Room {
     // the report's clientTime maps to server time via the freshest sample window,
     // so we rewind to min(now, max(oldest, clientTime)). Because LagComp clamps
     // out-of-range t to its endpoints, passing the server `now` minus the comp
-    // window is safe; we use clientTime directly (clients send a server-clock
-    // estimate via ClockSync) and rely on LagComp's clamp for safety.
-    const t = clientTime;
+    // window is safe; clients send a server-clock estimate via ClockSync.
+    //
+    // CRUCIAL: the client renders opponents `interpDelayMs` in the PAST (snapshot
+    // interpolation, client/main.ts), so the shooter aimed at where the victim was
+    // a frame-window ago — not where they are at fire time. Rewind by that same
+    // delay or every shot at a moving target whiffs (the rewound capsule sits
+    // ahead of the crosshair). Stationary victims are unaffected (past == now).
+    const t = clientTime - TUNING.world.interpDelayMs;
 
     const hit = this.lagcomp.rewindRay(shooter.id, origin, dir, range, t);
     if (!hit) return;
@@ -652,11 +668,33 @@ export class Room {
 
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const proj = this.projectiles[i];
+      // Segment the projectile sweeps this tick: stepProjectile mutates proj.pos,
+      // so capture the start first to test it against players afterward.
+      const segStart = { x: proj.pos.x, y: proj.pos.y, z: proj.pos.z };
       stepProjectile(proj, this.world, dt, this.stepOut);
-      if (!this.stepOut.detonated) continue;
 
-      const center = { x: this.stepOut.point.x, y: this.stepOut.point.y, z: this.stepOut.point.z };
-      const hits = computeExplosion(proj.kind, center, proj.ownerId, caps, this.world);
+      // The swept segment ends at the world-contact point if it detonated on
+      // geometry this step, else at the projectile's new position.
+      const segEnd = this.stepOut.detonated ? this.stepOut.point : proj.pos;
+
+      // Direct player contact (rockets only — grenades bounce/roll until fuse).
+      // A rocket that crosses a player capsule detonates ON them, closer than any
+      // wall behind; without this the rocket flies straight through (the bug).
+      let directHitId: number | undefined;
+      let center: Vec3 | null = null;
+      if (proj.kind === 'rocket') {
+        const ph = projectilePlayerHit(segStart, segEnd, caps, proj.ownerId);
+        if (ph) {
+          directHitId = ph.id;
+          center = ph.point;
+        }
+      }
+
+      // Nothing to resolve unless we hit a player or detonated on geometry/fuse.
+      if (center === null && !this.stepOut.detonated) continue;
+      if (center === null) center = { x: this.stepOut.point.x, y: this.stepOut.point.y, z: this.stepOut.point.z };
+
+      const hits = computeExplosion(proj.kind, center, proj.ownerId, caps, this.world, directHitId);
 
       const impulses: Array<{ id: number; impulse: Vec3Tuple }> = [];
       for (const hit of hits) {

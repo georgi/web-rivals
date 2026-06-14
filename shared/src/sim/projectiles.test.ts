@@ -10,6 +10,7 @@ import {
   makeProjectile,
   stepProjectile,
   computeExplosion,
+  projectilePlayerHit,
   type ProjectileStep,
   type PlayerCapsule,
 } from './projectiles';
@@ -199,5 +200,32 @@ describe('computeExplosion — line of sight', () => {
     const player: PlayerCapsule = { id: 20, center: v3(6.0, 2, 0), radius: 0.4, halfHeight: 0.9 };
     const hits = computeExplosion('rocket', center, 99, [player], world);
     expect(hits[0].damage).toBeGreaterThan(0);
+  });
+
+  describe('projectilePlayerHit (direct contact along the swept segment)', () => {
+    const victim: PlayerCapsule = { id: 2, center: v3(0, 1, 0), radius: 0.4, halfHeight: 0.9 };
+
+    it('detonates on a player the swept segment crosses (no more shoot-through)', () => {
+      const ph = projectilePlayerHit(v3(0, 1, -5), v3(0, 1, 5), [victim], 1);
+      expect(ph).not.toBeNull();
+      expect(ph!.id).toBe(2);
+      // Contact on the near face: combined radius (0.4 + PROJ_RADIUS 0.15) before center.
+      expect(ph!.point.z).toBeCloseTo(-0.55, 1);
+    });
+
+    it('returns null when the segment misses the capsule', () => {
+      expect(projectilePlayerHit(v3(2, 1, -5), v3(2, 1, 5), [victim], 1)).toBeNull();
+    });
+
+    it('excludes the owner (rocket never detonates on its own muzzle)', () => {
+      expect(projectilePlayerHit(v3(0, 1, -5), v3(0, 1, 5), [victim], 2)).toBeNull();
+    });
+
+    it('returns the nearest player when several lie on the segment', () => {
+      const near: PlayerCapsule = { id: 3, center: v3(0, 1, 0), radius: 0.4, halfHeight: 0.9 };
+      const far: PlayerCapsule = { id: 4, center: v3(0, 1, 3), radius: 0.4, halfHeight: 0.9 };
+      const ph = projectilePlayerHit(v3(0, 1, -5), v3(0, 1, 5), [far, near], 1);
+      expect(ph!.id).toBe(3);
+    });
   });
 });

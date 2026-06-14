@@ -14,6 +14,7 @@ import {
   clamp,
   lerpScalar,
   horizontalLength,
+  rayCapsule,
   EPSILON,
 } from '../math';
 import { TUNING } from '../tuning';
@@ -143,6 +144,46 @@ export function stepProjectile(
 
   copy(out.point, p.pos);
   return out;
+}
+
+/**
+ * Direct projectile-vs-player contact for the segment the projectile swept this
+ * tick (`start` -> `end`). Returns the NEAREST non-owner player whose capsule the
+ * swept sphere crosses, plus the contact point, or null. The owner is excluded so
+ * a rocket never detonates on the muzzle it just left (rocket-jumps still work via
+ * splash). Without this a rocket only detonates on static geometry and sails
+ * straight THROUGH players in the open — the "shoot through the player" bug.
+ */
+export function projectilePlayerHit(
+  start: Vec3,
+  end: Vec3,
+  players: PlayerCapsule[],
+  ownerId: EntityId,
+): { id: EntityId; point: Vec3 } | null {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const dz = end.z - start.z;
+  const segLen = Math.hypot(dx, dy, dz);
+  if (segLen < EPSILON) return null;
+  set(_dir, dx / segLen, dy / segLen, dz / segLen);
+
+  let bestT = Infinity;
+  let bestId: EntityId | null = null;
+  for (const pl of players) {
+    if (pl.id === ownerId) continue;
+    // Capsule core base = center bottom; combined radius folds in the proj sphere.
+    set(_toPlayer, pl.center.x, pl.center.y - pl.halfHeight, pl.center.z);
+    const t = rayCapsule(start, _dir, _toPlayer, pl.halfHeight * 2, pl.radius + PROJ_RADIUS, segLen);
+    if (t !== null && t < bestT) {
+      bestT = t;
+      bestId = pl.id;
+    }
+  }
+  if (bestId === null) return null;
+  return {
+    id: bestId,
+    point: { x: start.x + _dir.x * bestT, y: start.y + _dir.y * bestT, z: start.z + _dir.z * bestT },
+  };
 }
 
 /**

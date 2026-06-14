@@ -166,6 +166,93 @@ describe('Room', () => {
     room.destroy();
   });
 
+  it('rewinds a hitscan by the interp delay: hits a MOVING victim where the shooter saw them', async () => {
+    // The shooter renders opponents `interpDelayMs` in the past (client interp),
+    // so they aim at where the victim WAS. The server must rewind lag-comp by that
+    // same delay, not to "now". A stationary victim hides this (past == now); a
+    // moving one exposes it — rewind-to-now lands on empty air and every shot
+    // whiffs (the "can't damage anyone" bug).
+    let clock = 100_000; // ms; mutable so we drive a deterministic timeline
+    const room = await Room.create('TESTLAG', 'crate', () => clock);
+    const a = new StubSocket();
+    const b = new StubSocket();
+    room.addPlayer(asWs(a), 1, 'Shooter');
+    room.addPlayer(asWs(b), 2, 'Victim');
+
+    tickUntilPhase(room, 'live');
+    expect(room.matchState.phase).toBe('live');
+
+    // Read the victim's actual spawn (deterministic: id 2 takes the far corner).
+    const snap = received(b, 'snapshot').at(-1)!;
+    const v = snap.players.find((p) => p.id === 2)!;
+    const [sx, sy, sz] = v.pos;
+
+    // Hold the victim still on the spawn lane for a few ticks (build x=sx history),
+    // then walk it ~1m along -x over the last ~100ms. Steps stay under the
+    // per-tick displacement budget so the validator accepts them.
+    let seq = 0;
+    const tickAt = (x: number): void => {
+      clock += 33; // ~30Hz
+      const mv: InputMsg = {
+        t: 'input', seq: ++seq, clientTime: 0,
+        pos: [x, sy, sz], vel: [0, 0, 0], yaw: 0, pitch: 0, buttons: 0, events: 0,
+      };
+      room.ingestInput(2, mv);
+      room.tickOnce();
+    };
+    tickAt(sx); tickAt(sx); tickAt(sx);            // static baseline at x=sx
+    tickAt(sx - 0.33); tickAt(sx - 0.66); tickAt(sx - 0.99); // last ~100ms: walk off-lane
+
+    // Shooter fires NOW down the original lane (x=sx), where the victim was ~100ms
+    // ago. clientTime is the current server clock, exactly what the client stamps.
+    const shot: ShootMsg = {
+      t: 'shoot', seq: 1, weapon: 1,
+      origin: [sx, sy, sz + 2], dir: [0, 0, -1], clientTime: clock,
+    };
+    room.ingestShoot(1, shot);
+
+    const dmg = received(b, 'damage');
+    expect(dmg.length).toBeGreaterThan(0); // rewind-to-now would miss (victim at x=sx-0.99)
+    expect(dmg[0].victim).toBe(2);
+
+    room.destroy();
+  });
+
+  it('a rocket fired straight at a player in the open detonates ON them (no shoot-through)', async () => {
+    const room = await Room.create('TESTRKT', 'crate');
+    const a = new StubSocket();
+    const b = new StubSocket();
+    room.addPlayer(asWs(a), 1, 'Shooter');
+    room.addPlayer(asWs(b), 2, 'Victim');
+
+    tickUntilPhase(room, 'live');
+    expect(room.matchState.phase).toBe('live');
+
+    // Victim sits at its spawn in the open corner; shooter fires a rocket from 2m
+    // away straight at it. With contact detection the rocket explodes on the
+    // victim within a tick or two; without it the rocket flies THROUGH and only
+    // detonates on far geometry, leaving the victim untouched.
+    const snap = received(b, 'snapshot').at(-1)!;
+    const v = snap.players.find((p) => p.id === 2)!;
+    const [vx, vy, vz] = v.pos;
+
+    const rocket: ShootMsg = {
+      t: 'shoot', seq: 1, weapon: 2, // rocket
+      origin: [vx, vy, vz + 2], dir: [0, 0, -1], clientTime: 1e12,
+    };
+    room.ingestShoot(1, rocket);
+
+    // Step the projectile forward; it should detonate on the victim quickly.
+    for (let i = 0; i < 10 && received(b, 'damage').length === 0; i++) room.tickOnce();
+
+    const dmg = received(b, 'damage');
+    expect(dmg.length).toBeGreaterThan(0);
+    expect(dmg[0].victim).toBe(2);
+    expect(dmg[0].weapon).toBe(2);
+
+    room.destroy();
+  });
+
   it('goes live (no countdown) the first tick two players are present', async () => {
     const room = await Room.create('FFA1', 'crate');
     room.addPlayer(asWs(new StubSocket()), 1, 'Alice');
