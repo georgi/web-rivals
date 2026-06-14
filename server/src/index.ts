@@ -7,6 +7,10 @@
 // id->room mapping and room lifecycle (created on demand, destroyed when empty).
 
 import { WebSocketServer, type WebSocket } from 'ws';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { readFile, stat } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { extname, join, normalize, sep } from 'node:path';
 import {
   TUNING,
   DEFAULT_MAP_ID,
@@ -22,7 +26,68 @@ import { Room } from './room.js';
 // default in client/vite.config.ts); override with the PORT env var.
 const PORT = Number(process.env.PORT ?? 8090);
 
-const wss = new WebSocketServer({ port: PORT });
+// ---- static frontend hosting ------------------------------------------------
+// One process serves BOTH the built client AND the game WebSocket on a single
+// port, so the deployment is a single container with one exposed port. The
+// client connects WS back to its own origin (see client/src/main.ts), so no URL
+// configuration is needed. STATIC_DIR defaults to the built client relative to
+// THIS module (cwd-independent), overridable via the STATIC_DIR env var.
+const STATIC_DIR = process.env.STATIC_DIR
+  ? normalize(process.env.STATIC_DIR)
+  : fileURLToPath(new URL('../../client/dist', import.meta.url));
+
+const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.ico': 'image/x-icon',
+  '.wasm': 'application/wasm',
+  '.woff2': 'font/woff2',
+  '.webmanifest': 'application/manifest+json',
+};
+
+async function serveStatic(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const reqPath = decodeURIComponent((req.url ?? '/').split('?')[0]);
+  // Strip leading slashes + any `..` segments, then resolve under STATIC_DIR so a
+  // crafted path can never escape the served directory.
+  const rel = normalize(reqPath).replace(/^([/\\]|\.\.([/\\]|$))+/, '');
+  let file = join(STATIC_DIR, rel);
+  if (file !== STATIC_DIR && !file.startsWith(STATIC_DIR + sep)) {
+    file = join(STATIC_DIR, 'index.html');
+  }
+  try {
+    const s = await stat(file);
+    if (s.isDirectory()) throw new Error('dir');
+  } catch {
+    file = join(STATIC_DIR, 'index.html'); // unknown path / dir -> SPA entry
+  }
+  try {
+    const data = await readFile(file);
+    res.writeHead(200, { 'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream' });
+    res.end(data);
+  } catch {
+    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('Not found');
+  }
+}
+
+const httpServer = createServer((req, res) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('Method not allowed');
+    return;
+  }
+  void serveStatic(req, res);
+});
+
+// The WS server shares the HTTP server, so upgrades on any path land here.
+const wss = new WebSocketServer({ server: httpServer });
 let nextId = 1;
 
 // All live rooms by id. Private rooms key on their room code; quick-match rooms
@@ -182,7 +247,9 @@ wss.on('connection', (ws: WebSocket) => {
   });
 });
 
-console.log(
-  `[server] Web Rivals listening on :${PORT} — sim ${TUNING.world.serverHz}Hz, ` +
-    `snapshots ${TUNING.world.snapshotHz}Hz`,
-);
+httpServer.listen(PORT, () => {
+  console.log(
+    `[server] Web Rivals listening on :${PORT} — sim ${TUNING.world.serverHz}Hz, ` +
+      `snapshots ${TUNING.world.snapshotHz}Hz, serving ${STATIC_DIR}`,
+  );
+});

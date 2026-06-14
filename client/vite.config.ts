@@ -6,8 +6,11 @@ export default defineConfig({
   server: { port: 5173, host: true },
   preview: { port: 4173 },
   define: {
-    // Default 8090 (not the common-collision 8080); override with WS_URL.
-    __WS_URL__: JSON.stringify(process.env.WS_URL ?? 'ws://localhost:8090'),
+    // Default EMPTY → the client connects to its own origin at runtime (the
+    // single-container production setup, where the server serves the frontend
+    // and the WS on one port). Dev sets WS_URL=ws://localhost:8090 (see the
+    // root `dev:all` script) because there the server is a separate process.
+    __WS_URL__: JSON.stringify(process.env.WS_URL ?? ''),
   },
   build: {
     target: 'es2022',

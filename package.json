@@ -12,7 +12,7 @@
   ],
   "scripts": {
     "dev": "npm run dev -w @rivals/client",
-    "dev:all": "concurrently -n server,client -c green,cyan \"npm run server\" \"npm run dev\"",
+    "dev:all": "concurrently -n server,client -c green,cyan \"npm run server\" \"WS_URL=ws://localhost:8090 npm run dev\"",
     "build": "npm run build -w @rivals/client",
     "server": "npm run start -w @rivals/server",
     "bot": "npm run bot -w @rivals/tools",

@@ -1,0 +1,15 @@
+# Keep the build context small and never ship host artifacts into the image.
+# node_modules and dist are rebuilt inside the image (npm ci + npm run build);
+# excluding host node_modules also preserves the image's workspace symlinks.
+node_modules
+**/node_modules
+dist
+**/dist
+*.tsbuildinfo
+.git
+.gitignore
+*.log
+.DS_Store
+coverage
+.vite
+docs

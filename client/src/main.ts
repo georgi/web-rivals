@@ -105,14 +105,22 @@ const hidePrompt = (): void => {
   prompt.style.display = 'none';
 };
 
-// The PRD §19 latency gate: ALL networked testing runs through DelayedTransport
-// at 100ms / 2% loss. Exposed so the F3 panel can show it.
-const NET = {
-  delayMs: 100,
-  jitterMs: 0,
-  dropRate: 0.02,
-  connectTimeoutMs: 2500,
-};
+// The PRD §19 latency gate: in DEV, all networked testing runs through
+// DelayedTransport at 100ms / 2% loss so dev mirrors adverse conditions. In a
+// PRODUCTION build the gate is OFF (delay/loss 0) — a real deployment must not
+// inject artificial latency. Exposed so the F3 panel can show the active gate.
+const NET = import.meta.env.DEV
+  ? { delayMs: 100, jitterMs: 0, dropRate: 0.02, connectTimeoutMs: 2500 }
+  : { delayMs: 0, jitterMs: 0, dropRate: 0, connectTimeoutMs: 2500 };
+
+// The WS endpoint. __WS_URL__ is injected at build (vite define); when empty
+// (the production default) we connect to the SAME ORIGIN the page was served
+// from — so a single server on any host/port, including behind TLS, just works.
+function resolveWsUrl(): string {
+  if (__WS_URL__ && __WS_URL__.length > 0) return __WS_URL__;
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  return `${proto}://${location.host}`;
+}
 
 // Map a weapon slot to its TUNING key for the HUD name.
 const SLOT_KEY = { 1: 'ar', 2: 'rocket', 3: 'knife', 4: 'grenade' } as const;
@@ -129,16 +137,20 @@ function weaponName(slot: WeaponSlot): string {
 async function tryConnect(name: string, roomCode?: string): Promise<NetClient | null> {
   let transport: WebSocketTransport;
   try {
-    transport = new WebSocketTransport(__WS_URL__);
+    transport = new WebSocketTransport(resolveWsUrl());
   } catch {
     return null; // bad URL / WebSocket unavailable
   }
-  const delayed = new DelayedTransport(transport, {
-    delayMs: NET.delayMs,
-    jitterMs: NET.jitterMs,
-    dropRate: NET.dropRate,
-  });
-  const net = new NetClient(delayed);
+  // Only interpose the artificial-latency gate in DEV; production talks to the
+  // raw socket so there's zero added delay or packet loss.
+  const gated = import.meta.env.DEV
+    ? new DelayedTransport(transport, {
+        delayMs: NET.delayMs,
+        jitterMs: NET.jitterMs,
+        dropRate: NET.dropRate,
+      })
+    : transport;
+  const net = new NetClient(gated);
   try {
     await net.connect(name, roomCode, NET.connectTimeoutMs);
     return net;
