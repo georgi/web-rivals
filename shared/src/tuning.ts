@@ -123,12 +123,12 @@ export interface WorldTuning {
   inputHz: number; // client input send rate
   maxCatchupMs: number; // accumulator clamp for tab-out
   interpDelayMs: number; // render remote players this far in the past
-  roundTimeSec: number; // 90s round timer
-  countdownSec: number;
-  roundEndSec: number;
-  matchEndSec: number;
-  roundsToWin: number; // first to 3
-  disconnectGraceSec: number;
+  maxPlayers: number; // players per room (FFA)
+  fragLimit: number; // kills to win a match
+  respawnDelaySec: number; // delay before a dead player respawns
+  matchTimeCapSec: number; // stalemate backstop; 0 disables. most frags wins
+  warmupMinPlayers: number; // connected players required to go live
+  matchEndSec: number; // scoreboard display duration
 }
 
 export interface Tuning {
@@ -258,12 +258,12 @@ export const TUNING: Tuning = {
     inputHz: 30,
     maxCatchupMs: 250,
     interpDelayMs: 100,
-    roundTimeSec: 90,
-    countdownSec: 3,
-    roundEndSec: 1.5,
+    maxPlayers: 6,
+    fragLimit: 15,
+    respawnDelaySec: 1.5,
+    matchTimeCapSec: 600,
+    warmupMinPlayers: 2,
     matchEndSec: 5,
-    roundsToWin: 3,
-    disconnectGraceSec: 10,
   },
 };
 
