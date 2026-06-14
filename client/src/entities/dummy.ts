@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import { TUNING, clamp } from '@rivals/shared';
 import type { Vec3 } from '@rivals/shared';
 import type { CapsuleTarget } from '../combat/hitscan';
+import { Humanoid } from './humanoid';
 
 // Capsule the analytic/explosion math sees. Slightly wider/shorter than the
 // player capsule so the humanoid silhouette reads as a fair target.
@@ -42,7 +43,7 @@ export class Dummy {
   facingYaw: number;
   hp = MAX_HP;
 
-  private readonly body: THREE.Group;
+  private readonly body: Humanoid;
   private readonly bodyMat: THREE.MeshStandardMaterial;
   private readonly hpBar: THREE.Sprite;
   private readonly hpBarMat: THREE.SpriteMaterial;
@@ -72,8 +73,8 @@ export class Dummy {
       flatShading: true,
     });
 
-    this.body = buildHumanoid(this.bodyMat);
-    this.object.add(this.body);
+    this.body = new Humanoid(this.bodyMat);
+    this.object.add(this.body.object);
 
     // Billboarded HP bar. A SpriteMaterial with a canvas texture: the green/red
     // fill is drawn into the canvas and the texture updated only on change.
@@ -110,7 +111,7 @@ export class Dummy {
       // Hide the body briefly, then respawn at full.
       this.deathTimer = DEATH_HIDE;
       this.resetTimer = 0;
-      this.body.visible = false;
+      this.body.object.visible = false;
       this.hpBar.visible = false;
     } else {
       // (Re)start the heal-back timer on every non-fatal hit.
@@ -125,7 +126,7 @@ export class Dummy {
       if (this.deathTimer <= 0) {
         this.deathTimer = 0;
         this.hp = MAX_HP;
-        this.body.visible = true;
+        this.body.object.visible = true;
         this.hpBar.visible = true;
         this.flash = 0;
         this.bodyMat.color.setHex(BODY_COLOR);
@@ -155,6 +156,9 @@ export class Dummy {
       }
     }
 
+    // --- idle animation (stationary target → breathing only) ---
+    this.body.update(dt, 0, true);
+
     // --- billboard the HP bar toward the camera (yaw only via Sprite) ---
     // THREE.Sprite already faces the camera; nothing to rotate. Keep the camera
     // reference used so the signature stays honest and future bars (text) can
@@ -175,36 +179,3 @@ export class Dummy {
 }
 
 const FLASH_WHITE = new THREE.Color(FLASH_COLOR);
-
-// Build a simple stacked-box humanoid centered on the capsule center (y=0 in
-// local space is capsule center). Heights are chosen so the silhouette spans
-// roughly the standing capsule; legs reach down, head sits up.
-function buildHumanoid(mat: THREE.MeshStandardMaterial): THREE.Group {
-  const g = new THREE.Group();
-
-  const addBox = (
-    w: number,
-    h: number,
-    d: number,
-    x: number,
-    y: number,
-    z: number,
-  ): void => {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-    mesh.position.set(x, y, z);
-    g.add(mesh);
-  };
-
-  // Torso (centered slightly above capsule center).
-  addBox(0.5, 0.7, 0.28, 0, 0.15, 0);
-  // Head.
-  addBox(0.32, 0.32, 0.32, 0, 0.68, 0);
-  // Arms.
-  addBox(0.16, 0.6, 0.18, -0.37, 0.18, 0);
-  addBox(0.16, 0.6, 0.18, 0.37, 0.18, 0);
-  // Legs.
-  addBox(0.2, 0.7, 0.22, -0.13, -0.55, 0);
-  addBox(0.2, 0.7, 0.22, 0.13, -0.55, 0);
-
-  return g;
-}

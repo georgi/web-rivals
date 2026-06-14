@@ -161,8 +161,13 @@ async function boot(): Promise<void> {
   audio.setMasterVolume(settings.masterVolume);
 
   // ---- render shell + static map (built ONCE) ----
-  const { scene, camera, renderer } = createScene(canvas!);
-  scene.add(buildMapMesh(CRATE_MAP));
+  const { scene, camera, renderer, render: renderFrame, registerShadows, setQuality } = createScene(
+    canvas!,
+    settings.quality,
+  );
+  const mapMesh = buildMapMesh(CRATE_MAP);
+  scene.add(mapMesh);
+  registerShadows(mapMesh);
 
   const m = TUNING.movement;
   // The FOV speed cue lerps up from fovBase, so the base follows the setting.
@@ -171,10 +176,12 @@ async function boot(): Promise<void> {
   // ---- target dummy (solo-wait / offline; hidden once a real opponent joins) ----
   const dummy = new Dummy(1, { x: 0, y: 3.9, z: 0 });
   scene.add(dummy.object);
+  registerShadows(dummy.object);
 
   // ---- networked opponent capsule (online only; shown on join) ----
   const remote = new RemotePlayer();
   scene.add(remote.object);
+  registerShadows(remote.object);
 
   // ---- combat FX pools ----
   const particles = new Particles();
@@ -184,6 +191,23 @@ async function boot(): Promise<void> {
   const weapons = new Weapons();
   const viewmodel = new Viewmodel();
   camera.add(viewmodel.object);
+  // Dedicated view-space light rig so the weapon reads crisply regardless of
+  // where the player faces (the world sun would leave it in near-black). A warm
+  // key from upper-right + a dim cool fill, both children of the camera. Both
+  // live on layer 1 ONLY so they illuminate the viewmodel (also on layer 1) and
+  // never spill onto the world geometry (layer 0).
+  const VIEWMODEL_LAYER = 1;
+  const vmKey = new THREE.PointLight(0xfff0dc, 6, 4, 2);
+  vmKey.position.set(0.5, 0.2, 0.2);
+  vmKey.layers.set(VIEWMODEL_LAYER);
+  camera.add(vmKey);
+  const vmFill = new THREE.PointLight(0x6f86b0, 2.5, 4, 2);
+  vmFill.position.set(-0.4, -0.1, 0.3);
+  vmFill.layers.set(VIEWMODEL_LAYER);
+  camera.add(vmFill);
+  // Put the weapon meshes on layer 1 too (keeping layer 0 so the camera still
+  // renders them) — that's what couples them to the view-space lights above.
+  viewmodel.object.traverse((o) => o.layers.enable(VIEWMODEL_LAYER));
   scene.add(camera);
 
   // ---- local player ----
@@ -316,10 +340,18 @@ async function boot(): Promise<void> {
   // above the lobby; a DONE button and Esc dismiss it.
   const settingsRoot = document.createElement('div');
   document.body.appendChild(settingsRoot);
+  // The settings panel fires onChange continuously while a slider drags; only
+  // the (discrete, click-driven) quality change needs the expensive post-stack
+  // rebuild, so gate it on an actual change to keep slider drags cheap.
+  let lastQuality = settings.quality;
   const settingsPanel = new SettingsPanel(settingsRoot, settings, (s) => {
     plc.sensitivity = s.sensitivity;
     m.fovBase = s.fov; // the FOV speed cue lerps up from fovBase
     audio.setMasterVolume(s.masterVolume);
+    if (s.quality !== lastQuality) {
+      lastQuality = s.quality;
+      setQuality(s.quality); // rebuilds the post stack + shadow/DPR levers
+    }
   });
 
   // A DONE button inside the settings panel and Esc both close it.
@@ -730,9 +762,47 @@ async function boot(): Promise<void> {
     }
   };
 
+  // Dev-only frozen camera pose for screenshot framing (stripped from prod).
+  let devPose: { pos: Vec3; yaw: number; pitch: number } | null = null;
+  if (import.meta.env.DEV) {
+    (window as unknown as { __dev?: unknown }).__dev = {
+      setView(px: number, py: number, pz: number, yaw: number, pitch: number): void {
+        devPose = { pos: { x: px, y: py, z: pz }, yaw, pitch };
+      },
+      clearView(): void {
+        devPose = null;
+      },
+      // Renderer draw-call / resource counters for performance QA.
+      stats(): Record<string, number> {
+        return {
+          calls: renderer.info.render.calls,
+          triangles: renderer.info.render.triangles,
+          geometries: renderer.info.memory.geometries,
+          textures: renderer.info.memory.textures,
+          programs: renderer.info.programs?.length ?? 0,
+        };
+      },
+    };
+  }
+
   const step = (): void => {
     eyePosition(state, prevEye);
     prevFov = state.fov;
+
+    // Dev pose pin: override the sim so an elevated/static framing holds against
+    // gravity for visual QA. No-op in production (devPose stays null).
+    if (devPose) {
+      copy(state.pos, devPose.pos);
+      state.vel.x = 0;
+      state.vel.y = 0;
+      state.vel.z = 0;
+      plc.yaw = devPose.yaw;
+      plc.pitch = devPose.pitch;
+      state.yaw = devPose.yaw;
+      state.pitch = devPose.pitch;
+      weapons.update(SIM_DT);
+      return;
+    }
 
     const locked = plc.locked;
     // During a freeze, ignore movement/firing entirely and keep velocity zeroed.
@@ -848,6 +918,7 @@ async function boot(): Promise<void> {
         set(_remoteCenter, opp.pos[0], opp.pos[1], opp.pos[2]);
         remote.setPose(opp.pos[0], opp.pos[1], opp.pos[2], opp.yaw);
         remote.setHp(opp.hp);
+        remote.update(dt); // drive the walk/idle animation from pose motion
 
         // ---- positional opponent footsteps (real info in a 1v1, PRD §9) ----
         // Estimate horizontal speed from the sampled-pose delta; emit a step at a
@@ -883,7 +954,7 @@ async function boot(): Promise<void> {
     dummy.update(dt, camera);
     viewmodel.update(dt, horizontalSpeed(state), state.grounded);
 
-    renderer.render(scene, camera);
+    renderFrame();
   };
 
   // ---- F3 debug panel (with a network graph-lite readout) ----

@@ -6,6 +6,11 @@
 
 const SETTINGS_KEY = 'wr.settings';
 
+/** Graphics quality tier; maps to the post-processing / shadow / resolution
+ * presets in render/scene.ts (QUALITY). */
+export type QualityLevel = 'low' | 'medium' | 'high';
+const QUALITY_LEVELS: QualityLevel[] = ['low', 'medium', 'high'];
+
 export interface Settings {
   /** Mouselook gain: radians per device pixel (PointerLockCamera.sensitivity). */
   sensitivity: number;
@@ -13,12 +18,15 @@ export interface Settings {
   fov: number;
   /** Master output gain, 0..1 (scales all procedural SFX). */
   masterVolume: number;
+  /** Graphics quality tier (drives the render-side GPU cost). */
+  quality: QualityLevel;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   sensitivity: 0.0022,
   fov: 90,
   masterVolume: 0.7,
+  quality: 'high',
 };
 
 // Slider domains. Sensitivity/FOV match camera.ts + TUNING.movement.fovBase=90.
@@ -42,6 +50,9 @@ export function loadSettings(): Settings {
       sensitivity: clampNum(parsed.sensitivity, DEFAULT_SETTINGS.sensitivity, SENS_MIN, SENS_MAX),
       fov: clampNum(parsed.fov, DEFAULT_SETTINGS.fov, FOV_MIN, FOV_MAX),
       masterVolume: clampNum(parsed.masterVolume, DEFAULT_SETTINGS.masterVolume, VOL_MIN, VOL_MAX),
+      quality: QUALITY_LEVELS.includes(parsed.quality as QualityLevel)
+        ? (parsed.quality as QualityLevel)
+        : DEFAULT_SETTINGS.quality,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -74,6 +85,7 @@ export class SettingsPanel {
       sensitivity: clampNum(initial.sensitivity, DEFAULT_SETTINGS.sensitivity, SENS_MIN, SENS_MAX),
       fov: clampNum(initial.fov, DEFAULT_SETTINGS.fov, FOV_MIN, FOV_MAX),
       masterVolume: clampNum(initial.masterVolume, DEFAULT_SETTINGS.masterVolume, VOL_MIN, VOL_MAX),
+      quality: QUALITY_LEVELS.includes(initial.quality) ? initial.quality : DEFAULT_SETTINGS.quality,
     };
 
     root.classList.add('wr-settings-root', 'wr-settings-hidden');
@@ -127,6 +139,14 @@ export class SettingsPanel {
     this.volValue = vol.value;
     this.volValue.textContent = fmtVol(this.current.masterVolume);
     panel.appendChild(vol.row);
+
+    // ---- Graphics quality (segmented LOW / MEDIUM / HIGH) ----
+    panel.appendChild(
+      this.buildChoiceRow('Graphics', QUALITY_LEVELS, this.current.quality, (v) => {
+        this.current = { ...this.current, quality: v };
+        this.emit();
+      }),
+    );
 
     // ---- close hint ----
     const hint = el('div', 'wr-settings-hint');
@@ -191,6 +211,42 @@ export class SettingsPanel {
     row.appendChild(slider);
 
     return { row, value: valueEl };
+  }
+
+  /** A labelled segmented control: one button per choice, the active one marked
+   * with `aria-pressed` (CSS styles the pressed state). Fires onPick on change. */
+  private buildChoiceRow(
+    label: string,
+    choices: QualityLevel[],
+    value: QualityLevel,
+    onPick: (v: QualityLevel) => void,
+  ): HTMLElement {
+    const row = el('div', 'wr-settings-row');
+
+    const head = el('div', 'wr-settings-head');
+    const labelEl = el('span', 'wr-settings-label');
+    labelEl.textContent = label;
+    head.appendChild(labelEl);
+    row.appendChild(head);
+
+    const group = el('div', 'wr-settings-seg');
+    const buttons = new Map<QualityLevel, HTMLButtonElement>();
+    for (const choice of choices) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'wr-settings-seg-btn';
+      btn.textContent = choice.toUpperCase();
+      btn.setAttribute('aria-pressed', String(choice === value));
+      btn.addEventListener('click', () => {
+        for (const [c, b] of buttons) b.setAttribute('aria-pressed', String(c === choice));
+        onPick(choice);
+      });
+      buttons.set(choice, btn);
+      group.appendChild(btn);
+    }
+    row.appendChild(group);
+
+    return row;
   }
 }
 

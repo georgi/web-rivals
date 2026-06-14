@@ -6,6 +6,7 @@
 
 import * as THREE from 'three';
 import { TUNING } from '@rivals/shared';
+import { Humanoid } from './humanoid';
 
 const RADIUS = TUNING.movement.radius;
 // Capsule cylinder segment half-length (matches the server's CAP_HALF).
@@ -16,11 +17,15 @@ export class RemotePlayer {
   readonly object: THREE.Group;
   id = -1;
 
-  private readonly mesh: THREE.Mesh;
+  private readonly body: Humanoid;
   private readonly hpBar: THREE.Sprite;
   private readonly hpBarMat: THREE.SpriteMaterial;
   private readonly _tint = new THREE.Color();
   private lastHpFrac = -1;
+
+  // Pose deltas → speed/grounded for the walk cycle (no sim state for remotes).
+  private readonly _prev = new THREE.Vector3();
+  private prevValid = false;
 
   private static readonly HP_GREEN = new THREE.Color(0x46d35a);
   private static readonly HP_RED = new THREE.Color(0xff4040);
@@ -30,17 +35,15 @@ export class RemotePlayer {
     this.object.name = 'remote-opponent';
     this.object.visible = false;
 
-    // CapsuleGeometry(radius, length-of-cylinder-part, ...). length = 2*HALF.
-    const geo = new THREE.CapsuleGeometry(RADIUS, 2 * HALF, 6, 12);
+    // Animated blocky humanoid (replaces the old plain capsule).
     const mat = new THREE.MeshStandardMaterial({
       color: OPPONENT_COLOR,
       roughness: 0.85,
       metalness: 0.0,
       flatShading: true,
     });
-    this.mesh = new THREE.Mesh(geo, mat);
-    this.mesh.frustumCulled = false;
-    this.object.add(this.mesh);
+    this.body = new Humanoid(mat);
+    this.object.add(this.body.object);
 
     this.hpBarMat = new THREE.SpriteMaterial({ color: 0xffffff, depthTest: false, transparent: true });
     this.hpBar = new THREE.Sprite(this.hpBarMat);
@@ -48,6 +51,25 @@ export class RemotePlayer {
     this.hpBar.position.set(0, HALF + RADIUS + 0.35, 0);
     this.hpBar.renderOrder = 999;
     this.object.add(this.hpBar);
+  }
+
+  /**
+   * Advance the walk/idle animation. Speed + grounded are estimated from the
+   * interpolated capsule-centre motion (remotes are never simulated locally).
+   */
+  update(dt: number): void {
+    let speed = 0;
+    let grounded = true;
+    if (this.prevValid && dt > 0) {
+      const hdx = this.object.position.x - this._prev.x;
+      const hdz = this.object.position.z - this._prev.z;
+      speed = Math.hypot(hdx, hdz) / dt;
+      const vSpeed = Math.abs(this.object.position.y - this._prev.y) / dt;
+      grounded = vSpeed < 1.5; // mid-jump/fall → airborne pose
+    }
+    this._prev.copy(this.object.position);
+    this.prevValid = this.object.visible;
+    this.body.update(dt, speed, grounded);
   }
 
   show(id: number): void {
@@ -58,6 +80,7 @@ export class RemotePlayer {
   hide(): void {
     this.object.visible = false;
     this.id = -1;
+    this.prevValid = false; // avoid a speed spike when they reappear
   }
 
   get present(): boolean {
