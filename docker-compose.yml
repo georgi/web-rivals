@@ -1,0 +1,18 @@
+# Single-service deployment: builds the image and runs the server, which serves
+# the built client AND the game WebSocket on one port. See DEPLOY.md.
+#
+#   docker compose up -d --build
+#
+services:
+  web-rivals:
+    build: .
+    image: web-rivals
+    container_name: web-rivals
+    restart: unless-stopped
+    # Host:container. For HTTPS, bind to localhost (127.0.0.1:8080:8080) and put
+    # a TLS reverse proxy (e.g. Caddy) in front — see DEPLOY.md §5.
+    ports:
+      - '80:8080'
+    environment:
+      - NODE_ENV=production
+      - PORT=8080
