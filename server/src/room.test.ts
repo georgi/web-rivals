@@ -62,8 +62,14 @@ describe('Room', () => {
     expect(room.playerCount).toBe(2);
     expect(room.isFull).toBe(false); // FFA room holds up to maxPlayers (6)
 
-    // Each side learned about the other.
+    // Existing players are told about the newcomer immediately (their handler is
+    // already wired): a learned about b on b's join.
     expect(received(a, 'opponent').some((m) => m.id === 2 && m.present)).toBe(true);
+    // The newcomer's roster is NOT sent by addPlayer (it would race ahead of the
+    // `joined` message and be dropped client-side); the lobby calls sendRosterTo
+    // after `joined`. So b learns about a only once we call it.
+    expect(received(b, 'opponent').some((m) => m.id === 1)).toBe(false);
+    room.sendRosterTo(2);
     expect(received(b, 'opponent').some((m) => m.id === 1 && m.present)).toBe(true);
 
     // Drive a few ticks; a snapshot must reach both clients.

@@ -134,6 +134,10 @@ wss.on('connection', (ws: WebSocket) => {
               youAreReady: room.playerCount >= TUNING.world.warmupMinPlayers,
             }),
           );
+          // Send the existing-player roster AFTER `joined` so the client has
+          // wired its onOpponent handler (otherwise the roster is dropped and
+          // the newcomer never learns existing opponents' names).
+          room.sendRosterTo(playerId);
         })
         .catch((err) => {
           console.error(`[server] failed to allocate room for #${playerId}:`, err);

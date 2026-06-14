@@ -218,16 +218,34 @@ export class Room {
     this.validator.reset(id, pos);
     this.lagcomp.record(id, this.center(pos), CAP_RADIUS, CAP_HALF, this.now());
 
-    // Tell the newcomer about every existing player, and every existing player
-    // about the newcomer. (The match machine decides when the match goes live.)
+    // Tell every existing player about the newcomer now (their onOpponent is
+    // already wired). The REVERSE — telling the newcomer about existing players
+    // — must wait until after the lobby has sent `joined`, because the client
+    // only wires its onOpponent handler once connect() resolves on `joined`.
+    // Sending the roster here would race ahead of `joined` and be dropped, so it
+    // is deferred to sendRosterTo() (called by the lobby after `joined`).
     for (const other of this.players.values()) {
       if (other.id === id) continue;
-      this.sendTo(player, { t: 'opponent', present: true, name: other.name, id: other.id });
       this.sendTo(other, { t: 'opponent', present: true, name: player.name, id: player.id });
     }
 
     this.broadcastMatchState();
     return player;
+  }
+
+  /**
+   * Send a freshly-joined player the roster of existing OTHER players. The lobby
+   * calls this AFTER it sends `joined`, so the client has wired its onOpponent
+   * handler by the time these arrive (otherwise the roster races `joined` and is
+   * dropped, leaving the newcomer without opponent names — see addPlayer).
+   */
+  sendRosterTo(id: number): void {
+    const player = this.players.get(id);
+    if (!player) return;
+    for (const other of this.players.values()) {
+      if (other.id === id) continue;
+      this.sendTo(player, { t: 'opponent', present: true, name: other.name, id: other.id });
+    }
   }
 
   /**
