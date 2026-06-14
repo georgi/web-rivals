@@ -240,21 +240,10 @@ async function boot(): Promise<void> {
   // Per-id display names for the kill feed / scoreboard.
   const names = new Map<number, string>();
   let myName = 'Player';
-  // The last RoundState phase (to detect transitions for banners).
+  // The last match phase (to detect transitions for banners).
   let lastPhase: MatchPhase | null = null;
-  // De-dupe the per-second countdown banner.
-  let lastCountdownSec = -1;
   // When set, the loop should tear down the session and return to the lobby.
   let returnToLobby = false;
-
-  const opponentName = (): string => {
-    for (const [id, n] of names) if (id !== localId) return n;
-    return 'Opponent';
-  };
-
-  // Score is [player0Wins, player1Wins]; "I" am localId. I'm ahead/winning when
-  // my own component is the larger of the two (used for round/match banners).
-  const didIWin = (score: [number, number]): boolean => score[localId] > score[1 - localId];
 
   // ---- respawn helper ----
   const spawnCenter: Vec3 = { x: spawn.pos[0], y: centerY, z: spawn.pos[2] };
@@ -281,8 +270,9 @@ async function boot(): Promise<void> {
     if (online || offlineActive) plc.requestLock();
   });
   plc.onLockChange((locked) => {
-    // While frozen, the sim ignores input regardless; reflect lock for FX.
-    input.setEnabled(locked && !frozen);
+    // While frozen or locally dead, the sim ignores input regardless; reflect
+    // lock for FX.
+    input.setEnabled(locked && !frozen && !localDead);
     if (locked) {
       hidePrompt();
     } else if (online || offlineActive) {
@@ -564,7 +554,6 @@ async function boot(): Promise<void> {
     frozen = false;
     returnToLobby = false;
     lastPhase = null;
-    lastCountdownSec = -1;
     names.clear();
     remotes.hideAll();
     dummy.object.visible = true;
@@ -646,9 +635,6 @@ async function boot(): Promise<void> {
   const MUZZLE_OFFSET = 0.4;
   // ~350ms of guard, in sim ticks, covers a 100ms-each-way RTT + jitter.
   const SELF_GUARD_TICKS = Math.round(0.35 * TUNING.world.simHz);
-  // After the match-end scoreboard appears, wait before returning to the lobby
-  // (let the 5s overlay read). Slightly shorter so the lobby is back promptly.
-  const MATCH_END_RETURN_MS = 4500;
   const NOOP = (): void => {};
 
   let lastRenderMs = performance.now();
@@ -836,7 +822,9 @@ async function boot(): Promise<void> {
     // ---- send Input at inputHz (decimated from simHz) ----
     if (net) {
       inputTickCounter++;
-      if (inputTickCounter >= INPUT_EVERY) {
+      // Don't broadcast a stale pose while dead — the server owns our position
+      // until the authoritative respawn lands.
+      if (inputTickCounter >= INPUT_EVERY && !localDead) {
         inputTickCounter = 0;
         _posT[0] = state.pos.x; _posT[1] = state.pos.y; _posT[2] = state.pos.z;
         _velT[0] = state.vel.x; _velT[1] = state.vel.y; _velT[2] = state.vel.z;
