@@ -6,7 +6,8 @@ export default defineConfig({
   server: { port: 5173, host: true },
   preview: { port: 4173 },
   define: {
-    __WS_URL__: JSON.stringify(process.env.WS_URL ?? 'ws://localhost:8080'),
+    // Default 8090 (not the common-collision 8080); override with WS_URL.
+    __WS_URL__: JSON.stringify(process.env.WS_URL ?? 'ws://localhost:8090'),
   },
   build: {
     target: 'es2022',

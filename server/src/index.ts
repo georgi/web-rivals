@@ -18,7 +18,9 @@ import {
 } from '@rivals/shared';
 import { Room } from './room.js';
 
-const PORT = Number(process.env.PORT ?? 8080);
+// Default 8090 (not the common-collision 8080 — must match the client's WS_URL
+// default in client/vite.config.ts); override with the PORT env var.
+const PORT = Number(process.env.PORT ?? 8090);
 
 const wss = new WebSocketServer({ port: PORT });
 let nextId = 1;
