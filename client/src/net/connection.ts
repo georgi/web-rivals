@@ -26,7 +26,8 @@ import {
   type SpawnProjMsg,
   type DetonateMsg,
   type KillMsg,
-  type RoundStateMsg,
+  type MatchStateMsg,
+  type RespawnMsg,
   type OpponentMsg,
   type CorrectionMsg,
 } from '@rivals/shared';
@@ -89,7 +90,8 @@ export class NetClient {
   // ---- event hooks (default to noop so callers can subscribe selectively) ----
   onDamage: Cb<DamageMsg> = noop;
   onKill: Cb<KillMsg> = noop;
-  onRoundState: Cb<RoundStateMsg> = noop;
+  onMatchState: Cb<MatchStateMsg> = noop;
+  onRespawn: Cb<RespawnMsg> = noop;
   onOpponent: Cb<OpponentInfo> = noop;
   onSpawnProj: Cb<SpawnProjMsg> = noop;
   onDetonate: Cb<DetonateMsg> = noop;
@@ -269,8 +271,12 @@ export class NetClient {
         this.onKill(msg as KillMsg);
         break;
 
-      case 'round_state':
-        this.onRoundState(msg as RoundStateMsg);
+      case 'match_state':
+        this.onMatchState(msg as MatchStateMsg);
+        break;
+
+      case 'respawn':
+        this.onRespawn(msg as RespawnMsg);
         break;
 
       case 'opponent': {
