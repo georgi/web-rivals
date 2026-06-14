@@ -29,7 +29,7 @@ export const EventFlag = {
   Landed: 1 << 2,
 } as const;
 
-export type RoundPhase = 'waiting' | 'countdown' | 'live' | 'roundEnd' | 'matchEnd';
+export type MatchPhase = 'warmup' | 'live' | 'matchEnd';
 
 export type AnimState = 'idle' | 'run' | 'slide' | 'air';
 
@@ -153,12 +153,27 @@ export interface KillMsg {
   fall: boolean;
 }
 
-export interface RoundStateMsg {
-  t: 'round_state';
-  phase: RoundPhase;
-  score: [number, number]; // [player0Wins, player1Wins]
-  timer: number; // seconds remaining in current phase
-  round: number;
+/** Per-player frag entry for the live scoreboard / match-end ranking. */
+export interface FragEntry {
+  id: number;
+  frags: number;
+}
+
+export interface MatchStateMsg {
+  t: 'match_state';
+  phase: MatchPhase;
+  timer: number; // live: match clock (counts up); matchEnd: scoreboard countdown
+  fragLimit: number;
+  scores: FragEntry[]; // all players present, unordered (client ranks)
+  winner: number; // playerId at matchEnd, else -1
+}
+
+/** Server-authoritative respawn: the client snaps its local player here. */
+export interface RespawnMsg {
+  t: 'respawn';
+  id: number;
+  pos: Vec3Tuple;
+  yaw: number;
 }
 
 export interface PongMsg {
@@ -182,7 +197,8 @@ export type ServerMessage =
   | SpawnProjMsg
   | DetonateMsg
   | KillMsg
-  | RoundStateMsg
+  | MatchStateMsg
+  | RespawnMsg
   | PongMsg
   | OpponentMsg;
 
