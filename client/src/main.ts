@@ -43,7 +43,7 @@ import {
   lerp,
   lerpScalar,
 } from '@rivals/shared';
-import type { Vec3, Vec3Tuple, WeaponSlot, RoundPhase } from '@rivals/shared';
+import type { Vec3, Vec3Tuple, WeaponSlot, MatchPhase } from '@rivals/shared';
 
 import { createScene } from './render/scene';
 import { buildMapMesh } from './render/map-mesh';
@@ -59,7 +59,7 @@ import { Particles } from './render/particles';
 import { LocalProjectiles } from './combat/local-projectiles';
 import type { ProjectileHooks } from './combat/local-projectiles';
 import { Dummy } from './entities/dummy';
-import { RemotePlayer } from './entities/remote-player';
+import { RemotePlayers } from './entities/remote-players';
 import { Hud } from './ui/hud';
 import { Lobby } from './ui/lobby';
 import type { LobbyChoice } from './ui/lobby';
@@ -178,10 +178,9 @@ async function boot(): Promise<void> {
   scene.add(dummy.object);
   registerShadows(dummy.object);
 
-  // ---- networked opponent capsule (online only; shown on join) ----
-  const remote = new RemotePlayer();
-  scene.add(remote.object);
-  registerShadows(remote.object);
+  // ---- networked opponents (online only; up to maxPlayers-1, shown on join) ----
+  const remotes = new RemotePlayers();
+  scene.add(remotes.object);
 
   // ---- combat FX pools ----
   const particles = new Particles();
@@ -232,14 +231,17 @@ async function boot(): Promise<void> {
   let net: NetClient | null = null;
   let online = false;
   let localId = 0;
-  let opponentPresent = false;
-  // Frozen during countdown/roundEnd/matchEnd: input locked + velocity zeroed.
+  // Frozen during the match-end scoreboard: input locked + velocity zeroed.
   let frozen = false;
+  // True while the local player is dead awaiting a server respawn. Input is
+  // gated off until the `respawn` message lands (movement is client-auth, so we
+  // must not send a stale pose between death and the authoritative respawn).
+  let localDead = false;
   // Per-id display names for the kill feed / scoreboard.
   const names = new Map<number, string>();
   let myName = 'Player';
   // The last RoundState phase (to detect transitions for banners).
-  let lastPhase: RoundPhase | null = null;
+  let lastPhase: MatchPhase | null = null;
   // De-dupe the per-second countdown banner.
   let lastCountdownSec = -1;
   // When set, the loop should tear down the session and return to the lobby.
@@ -408,90 +410,78 @@ async function boot(): Promise<void> {
     nc.onOpponent = (o) => {
       if (o.id >= 0) names.set(o.id, o.name);
       if (o.present) {
-        opponentPresent = true;
-        remote.show(o.id);
-        dummy.object.visible = false;
+        remotes.setPresent(o.id, o.name);
+        dummy.object.visible = false; // no practice dummy online
       } else {
-        opponentPresent = false;
-        remote.hide();
-        dummy.object.visible = true;
+        remotes.setAbsent(o.id);
+        names.delete(o.id);
       }
     };
 
-    nc.onRoundState = (rs) => {
-      hud.setScore(rs.score[0], rs.score[1], rs.round);
+    nc.onMatchState = (ms) => {
+      // Live frag table + leader progress; the HUD ranks the entries itself.
+      hud.setFrags(ms.scores, localId, names, ms.fragLimit);
+      // Show the match clock only while live; hidden otherwise.
+      hud.setRoundTimer(ms.phase === 'live' ? ms.timer : 0);
 
-      // Live timer only during play; cleared (<=0) otherwise.
-      hud.setRoundTimer(rs.phase === 'live' ? rs.timer : 0);
-
-      const iWon = didIWin(rs.score);
-
-      // Freeze the player except during 'live' and 'waiting' (free-roam warmup).
-      frozen = rs.phase === 'countdown' || rs.phase === 'roundEnd' || rs.phase === 'matchEnd';
+      // Freeze only on the match-end scoreboard.
+      frozen = ms.phase === 'matchEnd';
       if (frozen) {
         state.vel.x = 0;
         state.vel.y = 0;
         state.vel.z = 0;
         input.setEnabled(false);
-      } else if (plc.locked) {
+      } else if (plc.locked && !localDead) {
         input.setEnabled(true);
       }
 
-      // Phase transitions drive the banners.
-      const phaseChanged = rs.phase !== lastPhase;
-      switch (rs.phase) {
-        case 'countdown': {
-          if (phaseChanged) audio.roundStart(); // once per round, on entering countdown
-          const sec = Math.max(1, Math.ceil(rs.timer));
-          if (sec !== lastCountdownSec) {
-            lastCountdownSec = sec;
-            hud.showBanner(String(sec), 'Get ready');
-          }
-          break;
+      const phaseChanged = ms.phase !== lastPhase;
+      if (phaseChanged) {
+        if (ms.phase === 'live') {
+          hud.hideScoreboard();
+          hud.showBanner('FIGHT', '');
+        } else if (ms.phase === 'matchEnd') {
+          hud.showScoreboardFFA(ms.scores, names, localId, myName, ms.winner);
+          hud.hideBanner();
+          audio.roundEnd(ms.winner === localId);
         }
-        case 'live':
-          if (phaseChanged) {
-            lastCountdownSec = -1;
-            hud.showBanner('FIGHT', '');
-            // FIGHT is a quick flash; let it auto-fade.
-          }
-          break;
-        case 'roundEnd':
-          if (phaseChanged) {
-            lastCountdownSec = -1;
-            audio.roundEnd(iWon);
-            hud.showBanner(iWon ? 'Round won' : 'Round lost', `${rs.score[0]} – ${rs.score[1]}`);
-          }
-          break;
-        case 'matchEnd':
-          if (phaseChanged) {
-            lastCountdownSec = -1;
-            audio.roundEnd(iWon);
-            hud.hideBanner();
-            const a = names.get(0) ?? (localId === 0 ? myName : opponentName());
-            const b = names.get(1) ?? (localId === 1 ? myName : opponentName());
-            hud.showScoreboard(rs.score, [a, b], iWon);
-            // Drop the pointer-lock and hand back to the lobby after the overlay.
-            if (document.pointerLockElement) document.exitPointerLock();
-            window.setTimeout(() => {
-              returnToLobby = true;
-            }, MATCH_END_RETURN_MS);
-          }
-          break;
-        case 'waiting':
-        default:
-          if (phaseChanged) lastCountdownSec = -1;
-          break;
       }
-      lastPhase = rs.phase;
+      lastPhase = ms.phase;
+    };
+
+    nc.onRespawn = (r) => {
+      if (r.id !== localId) return; // opponents respawn via snapshots
+      set(state.pos, r.pos[0], r.pos[1], r.pos[2]);
+      state.vel.x = 0;
+      state.vel.y = 0;
+      state.vel.z = 0;
+      state.grounded = false;
+      state.moveState = 'air';
+      state.capsuleHalf = standHalf();
+      state.yaw = r.yaw;
+      plc.yaw = r.yaw;
+      localHp = TUNING.combat.spawnHealth;
+      if (net) net.setHp(localHp);
+      localDead = false;
+      hidePrompt();
+      if (plc.locked && !frozen) input.setEnabled(true);
     };
 
     nc.onKill = (k) => {
-      const killer = names.get(k.killer) ?? (k.killer === localId ? myName : 'Opponent');
-      const victim = names.get(k.victim) ?? (k.victim === localId ? myName : 'Opponent');
+      const killer = names.get(k.killer) ?? (k.killer === localId ? myName : 'Player');
+      const victim = names.get(k.victim) ?? (k.victim === localId ? myName : 'Player');
       hud.addKill(killer, victim, k.weapon, k.fall);
-      // 1v1: every kill involves me — sting on my frags (skip my own deaths).
       if (k.killer === localId && k.victim !== localId) audio.kill();
+      // My own death: enter the dead state and freeze input until the server's
+      // respawn message arrives (server owns respawn position + timing in FFA).
+      if (k.victim === localId) {
+        localDead = true;
+        state.vel.x = 0;
+        state.vel.y = 0;
+        state.vel.z = 0;
+        input.setEnabled(false);
+        showPrompt('Respawning…');
+      }
     };
 
     nc.onDamage = (d) => {
@@ -505,9 +495,10 @@ async function boot(): Promise<void> {
         } else {
           hud.damageFrom(FRONT_DIR);
         }
-        if (localHp <= 0) respawn();
+        // Death + respawn are server-driven in FFA (kill + respawn messages); do
+        // not client-predict a respawn here.
       } else {
-        // We damaged the opponent -> hitmarker feedback.
+        // We damaged someone -> hitmarker feedback.
         hud.hitmarker();
         audio.hitmarker();
       }
@@ -543,12 +534,11 @@ async function boot(): Promise<void> {
     };
 
     nc.onClose = () => {
-      // Lost the server mid-session: surface it; the sandbox keeps running with
-      // local movement (no further net traffic). Return to the lobby.
-      opponentPresent = false;
-      remote.hide();
+      // Lost the server mid-session: surface it and return to the lobby.
+      remotes.hideAll();
       dummy.object.visible = true;
       frozen = false;
+      localDead = false;
       returnToLobby = true;
     };
   }
@@ -558,7 +548,8 @@ async function boot(): Promise<void> {
   function teardownSession(): void {
     if (net) {
       net.onOpponent = NOOP;
-      net.onRoundState = NOOP;
+      net.onMatchState = NOOP;
+      net.onRespawn = NOOP;
       net.onKill = NOOP;
       net.onDamage = NOOP;
       net.onDetonate = NOOP;
@@ -570,14 +561,14 @@ async function boot(): Promise<void> {
     net = null;
     online = false;
     offlineActive = false;
-    opponentPresent = false;
     frozen = false;
     returnToLobby = false;
     lastPhase = null;
     lastCountdownSec = -1;
     names.clear();
-    remote.hide();
+    remotes.hideAll();
     dummy.object.visible = true;
+    localDead = false;
     hud.hideBanner();
     projectiles.clear();
     respawn();
@@ -603,10 +594,9 @@ async function boot(): Promise<void> {
     online = false;
     offlineActive = true;
     localId = 0;
-    opponentPresent = false;
     frozen = false;
     dummy.object.visible = true;
-    remote.hide();
+    remotes.hideAll();
   }
 
   // ---- step / render plumbing ----
@@ -636,14 +626,6 @@ async function boot(): Promise<void> {
   // Reload SFX edge: fire audio.reload() only on the false->true transition so a
   // held reload key (or repeated startReload calls) doesn't retrigger the click.
   let prevReloading = false;
-  // Opponent footstep cadence (online): emit a positional step every interval
-  // while the remote is moving on the ground.
-  let footstepTimer = 0;
-  const FOOTSTEP_INTERVAL = 0.34; // seconds between steps at a walking cadence
-  const FOOTSTEP_SPEED_MIN = 2; // m/s horizontal: ignore near-stationary jitter
-  const _remotePrev: Vec3 = v3();
-  let remotePrevValid = false;
-
   const viewForward = (yaw: number, pitch: number, out: Vec3): void => {
     const cp = Math.cos(pitch);
     set(out, -Math.sin(yaw) * cp, Math.sin(pitch), -Math.cos(yaw) * cp);
@@ -679,10 +661,6 @@ async function boot(): Promise<void> {
   const INPUT_EVERY = Math.max(1, Math.round(TUNING.world.simHz / TUNING.world.inputHz));
   let inputTickCounter = 0;
 
-  // Remote capsule center for the cosmetic AR tracer endpoint (last sampled pose).
-  const _remoteCenter: Vec3 = v3();
-  const remoteCenter = (): Vec3 => _remoteCenter;
-
   // Audio listener scratch (camera forward/up for positional panning).
   const _listenFwd: Vec3 = v3();
   const _listenUp: Vec3 = { x: 0, y: 1, z: 0 };
@@ -710,9 +688,7 @@ async function boot(): Promise<void> {
       const spread = clamp(bloom, TUNING.ar.bloomMin, TUNING.ar.bloomMax);
       applyBloom(_dir, _fwd, spread, shotSeq++);
       if (online) {
-        const targets = opponentPresent
-          ? [{ id: remote.id, center: remoteCenter(), radius: m.radius, halfHeight: standHalf() }]
-          : [];
+        const targets = remotes.liveTargets();
         const res = hitscan(_eye, _dir, TUNING.ar.range, world, targets);
         particles.tracer(_muzzle, res.point);
         if (res.kind === 'world') particles.impact(res.point, res.normal);
@@ -806,7 +782,7 @@ async function boot(): Promise<void> {
 
     const locked = plc.locked;
     // During a freeze, ignore movement/firing entirely and keep velocity zeroed.
-    const active = locked && !frozen;
+    const active = locked && !frozen && !localDead;
     state.knifeOut = weapons.knifeOut;
 
     if (frozen) {
@@ -826,7 +802,9 @@ async function boot(): Promise<void> {
     if (events.landed) audio.land();
     if (events.slideStarted) audio.slideStart();
 
-    if (state.pos.y < CRATE_MAP.killY) respawn();
+    // Offline: client owns fall-respawn. Online: keep falling + reporting so the
+    // server detects killY and drives the authoritative kill + respawn.
+    if (!online && state.pos.y < CRATE_MAP.killY) respawn();
 
     // ---- weapon select ----
     if (active) {
@@ -903,51 +881,17 @@ async function boot(): Promise<void> {
     viewForward(plc.yaw, plc.pitch, _listenFwd);
     audio.updateListener(interpEye, _listenFwd, _listenUp);
 
-    // ---- sample + drive the remote opponent (online) ----
+    // ---- sample + drive ALL remote opponents (online) ----
     if (net) {
       const renderTime = net.serverTime(nowMs) - TUNING.world.interpDelayMs;
       const sampled = net.snapshots.sample(renderTime);
-      const oppId = net.playerId;
-      const opp = sampled.players.find((pl) => pl.id !== oppId);
-      if (opp) {
-        if (!opponentPresent) {
-          opponentPresent = true;
-          remote.show(opp.id);
-          dummy.object.visible = false;
-        }
-        set(_remoteCenter, opp.pos[0], opp.pos[1], opp.pos[2]);
-        remote.setPose(opp.pos[0], opp.pos[1], opp.pos[2], opp.yaw);
-        remote.setHp(opp.hp);
-        remote.update(dt); // drive the walk/idle animation from pose motion
-
-        // ---- positional opponent footsteps (real info in a 1v1, PRD §9) ----
-        // Estimate horizontal speed from the sampled-pose delta; emit a step at a
-        // walking cadence while moving and roughly grounded (small vertical drift).
-        if (remotePrevValid && dt > 0) {
-          const hdx = _remoteCenter.x - _remotePrev.x;
-          const hdz = _remoteCenter.z - _remotePrev.z;
-          const hSpeed = Math.hypot(hdx, hdz) / dt;
-          const vSpeed = Math.abs(_remoteCenter.y - _remotePrev.y) / dt;
-          const grounded = vSpeed < 1.5; // skip steps mid-jump/fall
-          if (hSpeed > FOOTSTEP_SPEED_MIN && grounded) {
-            footstepTimer -= dt;
-            if (footstepTimer <= 0) {
-              audio.footstepAt(_remoteCenter);
-              footstepTimer = FOOTSTEP_INTERVAL;
-            }
-          } else {
-            footstepTimer = 0; // next step plays promptly when movement resumes
-          }
-        }
-        copy(_remotePrev, _remoteCenter);
-        remotePrevValid = true;
-      } else if (opponentPresent) {
-        opponentPresent = false;
-        remote.hide();
-        dummy.object.visible = true;
-        remotePrevValid = false;
-        footstepTimer = 0;
+      for (const opp of sampled.players) {
+        if (opp.id === localId) continue;
+        remotes.setPresent(opp.id, names.get(opp.id) ?? 'Player');
+        remotes.setPose(opp.id, opp.pos[0], opp.pos[1], opp.pos[2], opp.yaw);
+        remotes.setHp(opp.id, opp.hp);
       }
+      remotes.update(dt);
     }
 
     particles.update(dt);
@@ -966,7 +910,7 @@ async function boot(): Promise<void> {
     pos: state.pos,
     net: net
       ? {
-          mode: opponentPresent ? 'online (1v1)' : 'online (solo-wait)',
+          mode: `online (FFA ${remotes.activeIds().length + 1}p)`,
           rttMs: Math.round(net.clock.rttMs),
           snapAgeMs: Math.round(net.snapshotAgeMs(performance.now())),
           delayMs: NET.delayMs,
