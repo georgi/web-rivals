@@ -351,6 +351,15 @@ function onServerMessage(msg: ServerMessage): void {
       }
       break;
     }
+    case 'respawn':
+      // Snap our tracked position to the server-authoritative spawn so subsequent
+      // patrol steps and input reports start from the correct post-death location.
+      if (msg.id === playerId) {
+        pos = { x: msg.pos[0], y: msg.pos[1], z: msg.pos[2] };
+        yaw = msg.yaw;
+        log(`RESPAWN -> [${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}]`);
+      }
+      break;
     case 'pong':
       break;
   }

@@ -951,7 +951,7 @@ async function boot(): Promise<void> {
       lobby.hide();
       showPrompt('Click to play');
 
-      // Run until the session asks to return to the lobby (matchEnd / disconnect).
+      // Run until the session asks to return to the lobby (server disconnect; matchEnd auto-rematches in-room).
       await waitFor(() => returnToLobby);
       teardownSession();
       // Loop back to lobby.show().
