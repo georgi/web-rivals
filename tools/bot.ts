@@ -137,7 +137,7 @@ const counts = {
 
 let opponentId = -1;
 let lastOppPos: Vec3 | null = null;
-let lastRoundKey = ''; // last logged round_state key (dedup the heartbeat)
+let lastMatchKey = ''; // last logged match_state key (dedup the heartbeat)
 
 let loopTimer: ReturnType<typeof setInterval> | null = null;
 let stopTimer: ReturnType<typeof setTimeout> | null = null;
@@ -341,13 +341,13 @@ function onServerMessage(msg: ServerMessage): void {
     case 'detonate':
       counts.detonate++;
       break;
-    case 'round_state': {
-      // Log only on a real transition (phase/score/round change) so the bot logs
-      // read as the round-state timeline, not the ~1Hz heartbeat churn.
-      const key = `${msg.phase}|${msg.score[0]}-${msg.score[1]}|r${msg.round}`;
-      if (key !== lastRoundKey) {
-        lastRoundKey = key;
-        log(`ROUNDSTATE phase=${msg.phase} score=${msg.score[0]}-${msg.score[1]} round=${msg.round} timer=${msg.timer}`);
+    case 'match_state': {
+      // Log only on a real transition (phase/winner change) so the bot logs
+      // read as the match-state timeline, not the ~1Hz heartbeat churn.
+      const key = `${msg.phase}|w${msg.winner}`;
+      if (key !== lastMatchKey) {
+        lastMatchKey = key;
+        log(`MATCHSTATE phase=${msg.phase} winner=${msg.winner} timer=${msg.timer}`);
       }
       break;
     }

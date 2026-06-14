@@ -855,3 +855,72 @@ body {
 .wr-gear:active {
   transform: rotate(35deg) scale(0.94);
 }
+
+/* ---- FFA live frag table (top-right) ---- */
+.wr-frag-table {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  min-width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font: 600 13px system-ui, -apple-system, sans-serif;
+  color: #f5f7fa;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+  pointer-events: none;
+  z-index: 5;
+}
+.wr-frag-head {
+  align-self: flex-end;
+  font: 700 12px ui-monospace, "SF Mono", Menlo, monospace;
+  color: #ffd27a;
+  letter-spacing: 0.06em;
+  margin-bottom: 2px;
+}
+.wr-frag-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 8px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.32);
+}
+.wr-frag-row.me {
+  background: rgba(47, 127, 240, 0.4);
+}
+.wr-frag-row.lead .wr-frag-n {
+  color: #ffd27a;
+}
+.wr-frag-n {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+
+/* ---- FFA match-end scoreboard rows (reuses .show on .wr-scoreboard) ---- */
+.wr-sb-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 18px;
+  font: 600 18px system-ui, -apple-system, sans-serif;
+  color: #f5f7fa;
+}
+.wr-sb-row.me {
+  background: rgba(47, 127, 240, 0.28);
+  border-radius: 8px;
+}
+.wr-sb-rank {
+  width: 1.5em;
+  color: rgba(245, 247, 250, 0.5);
+  font-variant-numeric: tabular-nums;
+}
+.wr-sb-name {
+  flex: 1;
+  text-align: left;
+}
+.wr-sb-n {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  color: #ffd27a;
+}
