@@ -1,4 +1,4 @@
-// Authoritative 1v1 game room (PRD §3.1, §6). One Room == one match. The room
+// Authoritative FFA game room (PRD §3.1, §6). One Room == one match. The room
 // owns the authoritative state for damage (HP), ammo, fire cooldowns, and the
 // server-side projectiles; movement stays CLIENT-authoritative and the room only
 // sanity-checks it (MovementValidator) and snaps offenders back (Correction).
@@ -491,9 +491,9 @@ export class Room {
       }
     }
 
-    // Damage-producing sim only runs when the round is LIVE (not frozen). During
-    // countdown / roundEnd / matchEnd we neither advance projectiles nor apply
-    // fall kills, so nothing changes HP while the round is paused.
+    // Damage-producing sim only runs when not frozen. On the match-end
+    // scoreboard we neither advance projectiles nor apply fall kills, so nothing
+    // changes HP while the match is paused.
     if (!this.frozen) {
       // Step server projectiles; resolve detonations against current capsules.
       this.stepProjectiles(dt, now);
@@ -684,9 +684,9 @@ export class Room {
   private sendSnapshot(now: number): void {
     const players: PlayerSnap[] = [];
     for (const p of this.players.values()) {
-      // While frozen the round is paused: report zero velocity (and an idle
-      // anim) so the opponent renders still on the countdown / round-end screen,
-      // even though movement is otherwise client-authoritative.
+      // While frozen the match is paused: report zero velocity (and an idle
+      // anim) so everyone renders still on the match-end scoreboard, even though
+      // movement is otherwise client-authoritative.
       const frozen = this.frozen;
       players.push({
         id: p.id,
