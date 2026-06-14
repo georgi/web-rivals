@@ -15,9 +15,9 @@ import { Room } from './room';
 
 const W = TUNING.world;
 
-// Tick the room until its match reaches `phase` (or a safety bound). The match
-// machine starts in `waiting`, flips to `countdown` (frozen) the first tick two
-// players are present, then `live` after countdownSec.
+// Tick the room until its match reaches `phase` (or a safety bound). The FFA
+// machine starts in `warmup`, flips to `live` the first tick two players are
+// present (no countdown), and to `matchEnd` when someone hits the frag limit.
 function tickUntilPhase(room: Room, phase: string, max = 2000): void {
   for (let i = 0; i < max && room.matchState.phase !== phase; i++) room.tickOnce();
 }
@@ -60,7 +60,7 @@ describe('Room', () => {
     expect(pa).not.toBeNull();
     expect(pb).not.toBeNull();
     expect(room.playerCount).toBe(2);
-    expect(room.isFull).toBe(true);
+    expect(room.isFull).toBe(false); // FFA room holds up to maxPlayers (6)
 
     // Each side learned about the other.
     expect(received(a, 'opponent').some((m) => m.id === 2 && m.present)).toBe(true);
@@ -160,92 +160,42 @@ describe('Room', () => {
     room.destroy();
   });
 
-  it('runs the match machine: waiting -> countdown -> live, freezing combat in countdown', async () => {
-    const room = await Room.create('TESTD', 'crate');
-    const a = new StubSocket();
-    const b = new StubSocket();
-    room.addPlayer(asWs(a), 1, 'Alice');
-    room.addPlayer(asWs(b), 2, 'Bob');
-
-    // First tick with both present flips waiting -> countdown (frozen).
+  it('goes live (no countdown) the first tick two players are present', async () => {
+    const room = await Room.create('FFA1', 'crate');
+    room.addPlayer(asWs(new StubSocket()), 1, 'Alice');
+    expect(room.matchState.phase).toBe('warmup'); // one player -> warmup
+    room.addPlayer(asWs(new StubSocket()), 2, 'Bob');
     room.tickOnce();
-    expect(room.matchState.phase).toBe('countdown');
-
-    // A shoot during the countdown is dropped by the freeze gate (no damage).
-    room.ingestShoot(1, {
-      t: 'shoot', seq: 1, weapon: 1, origin: [12, 1, 14], dir: [0, 0, -1], clientTime: 1e12,
-    });
-    expect(received(b, 'damage').length).toBe(0);
-
-    // Snapshots during the countdown report zero velocity (opponent renders still).
-    const snapsA = received(a, 'snapshot');
-    expect(snapsA[snapsA.length - 1].players.every((p) => p.vel[0] === 0 && p.vel[1] === 0 && p.vel[2] === 0)).toBe(true);
-
-    // Advance through the countdown -> live, then combat is allowed again.
-    tickUntilPhase(room, 'live');
-    expect(room.matchState.phase).toBe('live');
-
-    room.destroy();
+    expect(room.matchState.phase).toBe('live'); // two players -> live immediately
   });
 
-  it('a kill ends the round, increments the survivor score, and freezes', async () => {
-    const room = await Room.create('TESTE', 'crate');
+  it('reports all players in match_state scores', async () => {
+    const room = await Room.create('FFA2', 'crate');
     const a = new StubSocket();
     const b = new StubSocket();
-    room.addPlayer(asWs(a), 1, 'Shooter');
-    room.addPlayer(asWs(b), 2, 'Victim');
-    tickUntilPhase(room, 'live');
+    const c = new StubSocket();
+    room.addPlayer(asWs(a), 1, 'A');
+    room.addPlayer(asWs(b), 2, 'B');
+    room.addPlayer(asWs(c), 3, 'C');
+    expect(room.playerCount).toBe(3);
 
-    // Drop the victim's HP to lethal with repeated AR shots down the clear lane.
-    let guard = 0;
-    while (room.matchState.phase === 'live' && guard++ < 200) {
-      room.ingestShoot(1, {
-        t: 'shoot', seq: guard, weapon: 1, origin: [12, 1, 14], dir: [0, 0, -1], clientTime: 1e12,
-      });
-      room.tickOnce();
+    tickUntilPhase(room, 'live');
+    for (let i = 0; i < 4; i++) room.tickOnce();
+
+    const ms = received(a, 'match_state').at(-1);
+    expect(ms).toBeDefined();
+    expect(ms!.scores.map((s) => s.id).sort()).toEqual([1, 2, 3]);
+    expect(ms!.fragLimit).toBe(TUNING.world.fragLimit);
+  });
+
+  it('accepts up to maxPlayers and rejects the overflow', async () => {
+    const room = await Room.create('FFA3', 'crate');
+    const made: number[] = [];
+    for (let i = 1; i <= TUNING.world.maxPlayers + 1; i++) {
+      const p = room.addPlayer(asWs(new StubSocket()), i, `P${i}`);
+      if (p) made.push(i);
     }
-
-    // Round ended: victim slot (1) lost, so player 0 (Shooter) took the round.
-    expect(room.matchState.phase).toBe('roundEnd');
-    expect(room.matchState.score[0]).toBe(1);
-    expect(room.matchState.score[1]).toBe(0);
-
-    // A kill was broadcast naming the shooter.
-    const kills = received(b, 'kill');
-    expect(kills.length).toBeGreaterThan(0);
-    expect(kills[kills.length - 1].victim).toBe(2);
-    expect(kills[kills.length - 1].killer).toBe(1);
-
-    room.destroy();
-  });
-
-  it('forfeits after the disconnect grace window and finishes the room', async () => {
-    const room = await Room.create('TESTF', 'crate');
-    const a = new StubSocket();
-    const b = new StubSocket();
-    room.addPlayer(asWs(a), 1, 'Stay');
-    room.addPlayer(asWs(b), 2, 'Leaver');
-    tickUntilPhase(room, 'live');
-
-    // The leaver's socket closes — the slot is HELD for the grace window, so the
-    // match doesn't end instantly (a brief hiccup must not forfeit, PRD §2).
-    room.removePlayer(2);
-    expect(room.isFull).toBe(true); // slot still claimed
-    room.tickOnce();
-    expect(room.matchState.phase).toBe('live'); // still within grace
-
-    // Drive past the grace window -> reducer forfeits to the stayer (slot 0).
-    const ticks = Math.ceil((W.disconnectGraceSec + 0.5) * W.serverHz);
-    for (let i = 0; i < ticks; i++) room.tickOnce();
-    expect(room.matchState.matchWinner).toBe(0);
-    expect(['matchEnd', 'waiting']).toContain(room.matchState.phase);
-
-    // The held slot was vacated at matchEnd; once the match drains the room is
-    // finished and the lobby will reap it.
-    const drain = Math.ceil((W.matchEndSec + 0.5) * W.serverHz);
-    for (let i = 0; i < drain; i++) room.tickOnce();
-    expect(room.isFinished).toBe(true);
-
-    room.destroy();
+    expect(made.length).toBe(TUNING.world.maxPlayers);
+    expect(room.isFull).toBe(true);
   });
 });
