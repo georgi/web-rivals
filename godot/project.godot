@@ -1,0 +1,21 @@
+; Engine configuration file.
+; Web Rivals — Godot 4 / C# port of the Three.js arena FPS.
+
+config_version=5
+
+[application]
+
+config/name="Web Rivals"
+run/main_scene="res://scenes/Main.tscn"
+config/features=PackedStringArray("4.4", "C#", "Forward Plus")
+config/icon="res://icon.svg"
+
+[dotnet]
+
+project/assembly_name="WebRivals"
+
+[rendering]
+
+renderer/rendering_method="forward_plus"
+anti_aliasing/quality/msaa_3d=2
+environment/defaults/default_clear_color=Color(0.902, 0.933, 0.969, 1)

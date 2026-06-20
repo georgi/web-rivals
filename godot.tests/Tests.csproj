@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>WebRivals.Tests</AssemblyName>
+    <!-- Don't auto-glob; we hand-pick the Godot-free Shared sources to test. -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <!-- The pure simulation is engine-free, so it compiles and runs here with no
+         Godot dependency. This verifies behavioral parity with the TS original. -->
+    <Compile Include="../godot/src/Shared/VMath.cs" />
+    <Compile Include="../godot/src/Shared/Tuning.cs" />
+    <Compile Include="../godot/src/Shared/Geometry.cs" />
+    <Compile Include="../godot/src/Shared/Maps.cs" />
+    <Compile Include="../godot/src/Shared/Protocol.cs" />
+    <Compile Include="../godot/src/Shared/Sim/ITraceWorld.cs" />
+    <Compile Include="../godot/src/Shared/Sim/MockTraceWorld.cs" />
+    <Compile Include="../godot/src/Shared/Sim/Movement.cs" />
+    <Compile Include="../godot/src/Shared/Sim/Projectiles.cs" />
+    <Compile Include="../godot/src/Server/Match.cs" />
+    <Compile Include="../godot/src/Server/MovementValidator.cs" />
+    <Compile Include="../godot/src/Server/LagComp.cs" />
+    <Compile Include="../godot/src/Client/Net/Snapshots.cs" />
+  </ItemGroup>
+</Project>
