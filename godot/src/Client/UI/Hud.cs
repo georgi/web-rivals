@@ -134,6 +134,23 @@ public sealed partial class Hud : CanvasLayer
         _sbScore.Size = new Vector2(600, 360);
         _scoreboard.AddChild(_sbScore);
         AddChild(_scoreboard);
+
+        // This HUD is a pure display overlay — it has no interactive widgets. Every
+        // Control must ignore the mouse: otherwise (most importantly the center
+        // crosshair, which sits exactly under the captured cursor) it picks up and
+        // marks mouse-motion events handled before they reach ClientMain's
+        // _UnhandledInput, silently killing mouse-look (and click-to-fire). The
+        // damage-flash rects were already set Ignore individually; do the rest here.
+        IgnoreMouseRecursive(this);
+    }
+
+    private static void IgnoreMouseRecursive(Node n)
+    {
+        foreach (var child in n.GetChildren())
+        {
+            if (child is Control c) c.MouseFilter = Control.MouseFilterEnum.Ignore;
+            IgnoreMouseRecursive(child);
+        }
     }
 
     private static Label MakeLabel(string text, int size, HorizontalAlignment align)
