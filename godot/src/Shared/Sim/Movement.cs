@@ -109,8 +109,20 @@ public static class Movement
     private static readonly Vec3 _up = V3();
     private static readonly Vec3 _projTmp = V3();
     private static readonly Vec3 _downhill = V3();
+    private static readonly Vec3 _stepStartPos = V3();
+    private static readonly Vec3 _stepStartVel = V3();
+    private static readonly Vec3 _stepNormalPos = V3();
+    private static readonly Vec3 _stepNormalVel = V3();
+    private static readonly Vec3 _stepUp = V3();
+    private static readonly Vec3 _stepFwd = V3();
+    private static readonly Vec3 _stepDownV = V3();
 
     private const double SKIN = 0.01;
+    // Max ledge a grounded player auto-steps over (stairs, and the lip where a ramp
+    // meets a platform that the swept-box collider can't round) and the distance we
+    // snap back down to stay on a walkable surface. Smaller than the shortest real
+    // obstacle (the 2 m cover boxes) so nothing else becomes climbable.
+    private const double StepHeight = 0.9;
 
     private static void ApplyFriction(PlayerMoveState s, double friction, double dt)
     {
@@ -289,37 +301,34 @@ public static class Movement
             }
         }
 
-        // -- 7. Collide-and-slide move --
+        // -- 7. Collide-and-slide move (with stair/ledge step-up) --
+        bool groundedBeforeMove = s.Grounded;
+        Copy(_stepStartPos, s.Pos);
+        Copy(_stepStartVel, s.Vel);
         Scale(_remaining, s.Vel, dt);
-        for (int iter = 0; iter < 5; iter++)
+        bool hitWall = CollideSlide(s, world, m, _remaining);
+
+        // If a wall stopped us while on the ground, retry the move lifted by
+        // StepHeight so we can climb small ledges and crest the top of a ramp onto a
+        // platform — the swept-box collider can't round a convex top edge the way a
+        // real capsule would. Keep the stepped result only when it advances farther
+        // horizontally AND settles back onto walkable ground.
+        if (hitWall && groundedBeforeMove && s.MoveState != MoveStateName.Slide)
         {
-            double rlen = Math.Sqrt(_remaining.X * _remaining.X + _remaining.Y * _remaining.Y + _remaining.Z * _remaining.Z);
-            if (rlen < EPSILON) break;
-            var hit = world.CastCapsule(s.Pos, s.CapsuleHalf, m.Radius, _remaining);
-            if (hit == null)
+            Copy(_stepNormalPos, s.Pos);
+            Copy(_stepNormalVel, s.Vel);
+            Copy(s.Pos, _stepStartPos);
+            Copy(s.Vel, _stepStartVel);
+            double stepped = TryStepMove(s, world, m, dt);
+            if (stepped < 0 || stepped <= HorizDistSq(_stepStartPos, _stepNormalPos) + EPSILON)
             {
-                s.Pos.X += _remaining.X;
-                s.Pos.Y += _remaining.Y;
-                s.Pos.Z += _remaining.Z;
-                break;
+                Copy(s.Pos, _stepNormalPos); // stepping gained nothing — keep the plain move
+                Copy(s.Vel, _stepNormalVel);
             }
-            double backoff = rlen > EPSILON ? SKIN / rlen : 0;
-            if (hit.Fraction <= backoff)
+            else if (s.Vel.Y > 0)
             {
-                s.Pos.X += hit.Normal.X * SKIN;
-                s.Pos.Y += hit.Normal.Y * SKIN;
-                s.Pos.Z += hit.Normal.Z * SKIN;
-                ProjectOntoPlane(_remaining, _remaining, hit.Normal);
-                ProjectOntoPlane(s.Vel, s.Vel, hit.Normal);
-                continue;
+                s.Vel.Y = 0; // stepped up onto the ledge; shed leftover up-ramp velocity
             }
-            double moveFrac = hit.Fraction - backoff;
-            s.Pos.X += _remaining.X * moveFrac;
-            s.Pos.Y += _remaining.Y * moveFrac;
-            s.Pos.Z += _remaining.Z * moveFrac;
-            ProjectOntoPlane(_remaining, _remaining, hit.Normal);
-            Scale(_remaining, _remaining, 1 - moveFrac);
-            ProjectOntoPlane(s.Vel, s.Vel, hit.Normal);
         }
 
         // -- 8. Ground check --
@@ -328,6 +337,25 @@ public static class Movement
         var groundHit = world.CastCapsule(s.Pos, s.CapsuleHalf, m.Radius, _down);
         bool wasGrounded = s.Grounded;
         bool nowGrounded = groundHit != null && groundHit.Normal.Y > m.GroundNormalY;
+
+        // Stay-on-ground: if we were grounded and the move left us just barely off a
+        // walkable surface, snap back down onto it. The swept-box ramp surface is a
+        // knife edge, so a high-speed climb would otherwise drift off and fling us
+        // into the air (the up-slope velocity becomes a launch). Bounded by
+        // StepHeight, so genuine ledges/drops still let us fall.
+        if (!nowGrounded && wasGrounded && !events.Jumped && s.MoveState != MoveStateName.Slide)
+        {
+            Set(_down, 0, -(StepHeight + SKIN), 0);
+            var snap = world.CastCapsule(s.Pos, s.CapsuleHalf, m.Radius, _down);
+            if (snap != null && snap.Normal.Y > m.GroundNormalY)
+            {
+                double d = snap.Fraction * (StepHeight + SKIN) - SKIN;
+                if (d > 0) s.Pos.Y -= d;
+                groundHit = snap;
+                nowGrounded = true;
+                if (s.Vel.Y > 0) s.Vel.Y = 0; // shed up-ramp velocity so we don't relaunch
+            }
+        }
 
         if (nowGrounded)
         {
@@ -353,5 +381,85 @@ public static class Movement
         double t = Clamp((speed - m.FovSpeedThreshold) / (m.FovSpeedMax - m.FovSpeedThreshold), 0, 1);
         double fovTarget = m.FovBase + m.FovSprintBonus * t;
         s.Fov = Damp(s.Fov, fovTarget, m.FovLerpRate, dt);
+    }
+
+    /// <summary>Swept collide-and-slide of the capsule through `remaining` (mutated).
+    /// Mutates s.Pos/s.Vel. Returns true if it hit a steep (non-walkable) surface —
+    /// the cue for the caller to attempt a step-up.</summary>
+    private static bool CollideSlide(PlayerMoveState s, MovementTuning m, ITraceWorld world, Vec3 remaining)
+    {
+        bool hitWall = false;
+        for (int iter = 0; iter < 5; iter++)
+        {
+            double rlen = Math.Sqrt(remaining.X * remaining.X + remaining.Y * remaining.Y + remaining.Z * remaining.Z);
+            if (rlen < EPSILON) break;
+            var hit = world.CastCapsule(s.Pos, s.CapsuleHalf, m.Radius, remaining);
+            if (hit == null)
+            {
+                s.Pos.X += remaining.X;
+                s.Pos.Y += remaining.Y;
+                s.Pos.Z += remaining.Z;
+                break;
+            }
+            if (hit.Normal.Y <= m.GroundNormalY) hitWall = true;
+            double backoff = rlen > EPSILON ? SKIN / rlen : 0;
+            if (hit.Fraction <= backoff)
+            {
+                s.Pos.X += hit.Normal.X * SKIN;
+                s.Pos.Y += hit.Normal.Y * SKIN;
+                s.Pos.Z += hit.Normal.Z * SKIN;
+                ProjectOntoPlane(remaining, remaining, hit.Normal);
+                ProjectOntoPlane(s.Vel, s.Vel, hit.Normal);
+                continue;
+            }
+            double moveFrac = hit.Fraction - backoff;
+            s.Pos.X += remaining.X * moveFrac;
+            s.Pos.Y += remaining.Y * moveFrac;
+            s.Pos.Z += remaining.Z * moveFrac;
+            ProjectOntoPlane(remaining, remaining, hit.Normal);
+            Scale(remaining, remaining, 1 - moveFrac);
+            ProjectOntoPlane(s.Vel, s.Vel, hit.Normal);
+        }
+        return hitWall;
+    }
+
+    // Convenience overload taking the args in the existing call order.
+    private static bool CollideSlide(PlayerMoveState s, ITraceWorld world, MovementTuning m, Vec3 remaining)
+        => CollideSlide(s, m, world, remaining);
+
+    /// <summary>Stair-step maneuver: lift by StepHeight, redo the horizontal move,
+    /// drop back onto the ledge. Mutates s.Pos/s.Vel. Returns the squared horizontal
+    /// distance advanced from the entry position, or -1 if the step is invalid (no
+    /// headroom, or it doesn't settle on walkable ground).</summary>
+    private static double TryStepMove(PlayerMoveState s, ITraceWorld world, MovementTuning m, double dt)
+    {
+        double sx = s.Pos.X, sz = s.Pos.Z;
+
+        // 1. Up by StepHeight (clamped by any ceiling).
+        Set(_stepUp, 0, StepHeight, 0);
+        var up = world.CastCapsule(s.Pos, s.CapsuleHalf, m.Radius, _stepUp);
+        double rise = (up == null ? StepHeight : up.Fraction * StepHeight) - SKIN;
+        if (rise < SKIN) return -1;
+        s.Pos.Y += rise;
+
+        // 2. Horizontal move at the raised height.
+        Set(_stepFwd, s.Vel.X * dt, 0, s.Vel.Z * dt);
+        CollideSlide(s, m, world, _stepFwd);
+
+        // 3. Settle back down onto the ledge (no farther than we rose).
+        Set(_stepDownV, 0, -(rise + SKIN), 0);
+        var down = world.CastCapsule(s.Pos, s.CapsuleHalf, m.Radius, _stepDownV);
+        if (down == null || down.Normal.Y <= m.GroundNormalY) return -1; // stepped into air / onto a wall
+        double drop = down.Fraction * (rise + SKIN) - SKIN;
+        if (drop > 0) s.Pos.Y -= drop;
+
+        double dx = s.Pos.X - sx, dz = s.Pos.Z - sz;
+        return dx * dx + dz * dz;
+    }
+
+    private static double HorizDistSq(Vec3 a, Vec3 b)
+    {
+        double dx = a.X - b.X, dz = a.Z - b.Z;
+        return dx * dx + dz * dz;
     }
 }

@@ -425,6 +425,30 @@ internal static class Program
             True(hit != null, "hit ramp");
             Greater(hit.Normal.Y, Tuning.Movement.GroundNormalY);
         });
+
+        Test("running up a ramp reaches the high-ground plateau", () =>
+        {
+            // Regression for two bugs that made ramps unusable with the Mock backend:
+            //  (1) the ramp's bounding-box toe face acted as a vertical wall (shares
+            //      normal.y == 0 with the side walls), so a player stopped dead at
+            //      toe+radius with zero lift; and
+            //  (2) even once climbing, the swept-box collider can't round the convex
+            //      lip where the ramp meets the plateau, so the player wedged at the
+            //      top. Fixes: reject ramp box faces on the air side of the slope
+            //      plane (MockTraceWorld) + stay-on-ground/step-up (Movement).
+            // MinusZ ramp: toe at z=8, rises to z=4 onto the 8x8 block (top y=3);
+            // forward = -Z. Start on open floor behind the toe.
+            var world = new MockTraceWorld(Maps.Crate.Solids);
+            var s = Movement.CreateMoveState(V3(0, 0.92, 11), 0);
+            s.Grounded = true;
+            s.MoveState = MoveStateName.Ground;
+            var ev = new MoveEvents();
+            var input = new InputFrame { Buttons = Button.Forward | Button.Sprint, Yaw = 0 };
+            for (int i = 0; i < 55; i++) Movement.StepMovement(s, input, world, Tuning.SimDt, ev);
+            True(s.Pos.Z < 4, "player crested onto the plateau (past the ramp/block junction)");
+            Greater(s.Pos.Y, 3.5, "player is standing up on the plateau (top y=3, center ~3.9)");
+            True(s.Grounded, "player is grounded on the plateau, not wedged/airborne");
+        });
     }
 
     static void ProtocolTests()

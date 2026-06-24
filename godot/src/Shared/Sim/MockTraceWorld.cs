@@ -101,17 +101,33 @@ public sealed class MockTraceWorld : ITraceWorld
 
         foreach (var r in _ramps)
         {
+            // Offset slope plane (shared by the box-face gate below and the plane test).
+            AddScaled(_scratchOffsetPoint, r.PlanePoint, r.PlaneNormal, planeOffset);
+
             Set(_scratchExpMin, r.Min.X - expX, r.Min.Y - expY, r.Min.Z - expZ);
             Set(_scratchExpMax, r.Max.X + expX, r.Max.Y + expY, r.Max.Z + expZ);
             double? tb = RayAabb(from, _scratchRayDir, _scratchAabb, bestT, _scratchNormal);
-            if (tb != null && tb >= 0 && tb <= bestT && _scratchNormal.Y <= 0.5)
+            // A ramp's bounding box includes empty air above the slope, and the
+            // player legitimately occupies that air whenever standing on the ramp.
+            // A box-face hit only counts as a real wall when it is:
+            //  - a genuine entry from OUTSIDE the box: RayAabb returns an all-zero
+            //    normal when the ray starts inside, which otherwise shadows the
+            //    slope-plane hit and freezes the player mid-ramp (no ground normal,
+            //    no forward progress);
+            //  - not the top face (normal.y > 0.5 is air above the slope); and
+            //  - on the solid side of the slope plane — this rejects the toe (low
+            //    front) face, which shares normal.y == 0 with the genuine side/back
+            //    walls but is mostly air. Without it the toe acts as a vertical wall
+            //    and you can't run up the ramp (you stop dead at toe+radius).
+            bool boxEntry = _scratchNormal.X != 0 || _scratchNormal.Y != 0 || _scratchNormal.Z != 0;
+            if (tb != null && tb >= 0 && tb <= bestT && boxEntry && _scratchNormal.Y <= 0.5
+                && PlaneSide(from, _scratchRayDir, tb.Value, _scratchOffsetPoint, r.PlaneNormal) <= EPSILON)
             {
                 bestT = tb.Value;
                 Copy(_bestNormal, _scratchNormal);
                 hit = true;
             }
 
-            AddScaled(_scratchOffsetPoint, r.PlanePoint, r.PlaneNormal, planeOffset);
             double? tp = RayPlaneClamped(from, _scratchRayDir, _scratchOffsetPoint, r.PlaneNormal, bestT);
             if (tp != null && tp >= 0 && tp <= bestT)
             {
@@ -164,7 +180,12 @@ public sealed class MockTraceWorld : ITraceWorld
             Copy(_scratchExpMin, r.Min);
             Copy(_scratchExpMax, r.Max);
             double? tb = RayAabb(origin, dir, _scratchAabb, bestT, _scratchNormal);
-            if (tb != null && tb >= 0 && tb <= bestT && _scratchNormal.Y <= 0.5)
+            // Reject from-inside (all-zero normal) hits and bounding-box faces on the
+            // air side of the slope plane (see Sweep): the toe face is mostly air and
+            // must not block hitscan either.
+            bool boxEntry = _scratchNormal.X != 0 || _scratchNormal.Y != 0 || _scratchNormal.Z != 0;
+            if (tb != null && tb >= 0 && tb <= bestT && boxEntry && _scratchNormal.Y <= 0.5
+                && PlaneSide(origin, dir, tb.Value, r.PlanePoint, r.PlaneNormal) <= EPSILON)
             {
                 bestT = tb.Value;
                 Copy(_bestNormal, _scratchNormal);
@@ -249,6 +270,16 @@ public sealed class MockTraceWorld : ITraceWorld
     }
 
     // ---- geometry helpers ----
+
+    // Signed distance of the swept point (origin + dir*t) from a plane through
+    // `point` with unit `normal`. <= 0 means the solid (below-surface) side.
+    private static double PlaneSide(Vec3 origin, Vec3 dir, double t, Vec3 point, Vec3 normal)
+    {
+        double hx = origin.X + dir.X * t - point.X;
+        double hy = origin.Y + dir.Y * t - point.Y;
+        double hz = origin.Z + dir.Z * t - point.Z;
+        return hx * normal.X + hy * normal.Y + hz * normal.Z;
+    }
 
     private double? RayPlaneClamped(Vec3 origin, Vec3 dir, Vec3 point, Vec3 normal, double maxT)
     {
