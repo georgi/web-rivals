@@ -33,9 +33,10 @@ godot/src/
 
 ## Toolchain
 
-Requires the **.NET 8 SDK** and **Godot 4.4 (.NET / Mono build)**. On this
-machine they were installed to `/opt/dotnet` and `/opt/godot` (see
-`/etc/profile.d/godot-dotnet.sh`). `godot` is on the `PATH`.
+Requires the **.NET 8 SDK** and **Godot 4.7 (.NET / Mono build)**. The
+`Godot.NET.Sdk` and `GodotSharp` packages restore from nuget.org, so any
+machine that's online can build; point your tooling at a local Godot 4.7
+(.NET) editor to open the project.
 
 ```bash
 # Build the C# assembly
